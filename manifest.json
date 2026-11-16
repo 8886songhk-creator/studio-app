@@ -1,7 +1,7 @@
 {
   "id": "/studio-app/",
-  "name": "올인원 퇴고 스튜디오",
-  "short_name": "퇴고스튜디오",
+  "name": "Studio Cloud",
+  "short_name": "Studio Cloud",
   "description": "마교를 압류한 대장장이 전용 클라우드 퇴고 스튜디오",
   "start_url": "./",
   "scope": "./",
