@@ -28,4 +28,591 @@
   .field-lbl { display: block; font-size: 0.8rem; font-weight: 700; color: #e2e8f0; margin: 14px 0 6px 0; }
   .field-inp {
     width: 100%; background: #0f172a; color: #fff; border: 1px solid #334155;
-    border-radius: 8px; padding: 11px 12px;
+    border-radius: 8px; padding: 11px 12px; font-size: 15px; outline: none;
+  }
+  .field-inp:focus { border-color: #38bdf8; }
+  .help-link {
+    display: inline-block; margin-top: 6px; font-size: 0.78rem; color: #38bdf8; text-decoration: none;
+  }
+  .help-link:hover { text-decoration: underline; }
+  .primary-btn {
+    width: 100%; margin-top: 18px; padding: 12px 16px; border: none; border-radius: 9px;
+    background: #0284c7; color: #fff; font-size: 0.92rem; font-weight: 800;
+    cursor: pointer; font-family: inherit; transition: background 0.15s;
+  }
+  .primary-btn:hover { background: #0369a1; }
+  .primary-btn:disabled { opacity: 0.55; cursor: wait; }
+  .status-msg {
+    margin-top: 12px; font-size: 0.8rem; line-height: 1.45; border-radius: 8px;
+    padding: 9px 11px; display: none; word-break: keep-all;
+  }
+  .status-msg.info { display: block; background: rgba(56,189,248,0.12); color: #bae6fd; border: 1px solid rgba(56,189,248,0.35); }
+  .status-msg.err { display: block; background: rgba(239,68,68,0.15); color: #fecaca; border: 1px solid rgba(239,68,68,0.45); }
+
+  .upload-zone {
+    border: 2px dashed #38bdf8; border-radius: 12px; background: rgba(14,165,233,0.08);
+    padding: 28px 16px; text-align: center; cursor: pointer; margin-top: 14px; transition: 0.15s;
+  }
+  .upload-zone:hover { background: rgba(14,165,233,0.16); }
+
+  /* 상단 슬림 클라우드 컨트롤 바 */
+  #appWrap { display: none; flex-direction: column; width: 100%; height: 100%; }
+  #appWrap.active { display: flex; }
+  #cloudBar {
+    height: 34px; background: #060b16; border-bottom: 1px solid #1e293b;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 10px; gap: 6px; flex-shrink: 0; font-size: 0.76rem; z-index: 20;
+  }
+  #cloudBar.collapsed { display: none; }
+  .cbar-left, .cbar-right { display: flex; align-items: center; gap: 5px; overflow-x: auto; scrollbar-width: none; }
+  .cbar-left::-webkit-scrollbar, .cbar-right::-webkit-scrollbar { display: none; }
+  .c-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0; }
+  .c-dot.syncing { background: #eab308; }
+  .c-dot.error { background: #ef4444; }
+  .c-status-txt { color: #cbd5e1; font-weight: 700; white-space: nowrap; }
+  .c-btn {
+    background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px;
+    padding: 3px 8px; font-size: 0.73rem; font-weight: 700; cursor: pointer;
+    font-family: inherit; white-space: nowrap;
+  }
+  .c-btn:hover { border-color: #38bdf8; color: #fff; }
+  .c-btn.save { background: #0d9488; border-color: #14b8a6; color: #fff; }
+  .c-btn.update { background: #1d4ed8; border-color: #3b82f6; color: #fff; }
+
+  #btnRestoreCloudBar {
+    display: none; position: fixed; top: 6px; right: 8px; z-index: 9999;
+    background: rgba(15,23,42,0.88); color: #38bdf8; border: 1px solid #38bdf8;
+    border-radius: 999px; padding: 3px 9px; font-size: 0.72rem; font-weight: 800; cursor: pointer;
+  }
+  #btnRestoreCloudBar.show { display: inline-flex; align-items: center; gap: 4px; }
+
+  #frameWrap { flex: 1 1 auto; width: 100%; min-height: 0; position: relative; }
+  #studioFrame { width: 100%; height: 100%; border: none; display: block; background: #0f172a; }
+</style>
+</head>
+<body>
+
+<!-- 1. 최초 1회 서버 연결 화면 -->
+<div id="setupScreen" class="screen-center">
+  <div class="auth-card">
+    <h1>⚒️ 퇴고 스튜디오 클라우드</h1>
+    <div class="auth-sub">원고·사전·오디오북 책갈피는 100% 본인 전용 비공개(Private) 금고에 격리 저장됩니다.</div>
+
+    <label class="field-lbl" for="inpToken">1. GitHub 비밀 토큰 (ghp_...)</label>
+    <input type="password" id="inpToken" class="field-inp" placeholder="ghp_로 시작하는 토큰을 붙여넣으세요" autocomplete="off">
+    <a class="help-link" href="https://github.com/settings/tokens/new?scopes=repo&description=MagyoStudioCloud" target="_blank" rel="noopener">
+      🔑 토큰 발급 페이지 바로 열기 (Expiration: No expiration, repo 체크) ↗
+    </a>
+
+    <label class="field-lbl" for="inpVault">2. 비공개 원고 금고 저장소 이름 (자동 생성됨)</label>
+    <input type="text" id="inpVault" class="field-inp" value="magyo-studio-vault">
+
+    <button type="button" id="btnConnect" class="primary-btn" onclick="connectVault()">🔓 비공개 서버 자동 개설 및 연결</button>
+    <div id="setupMsg" class="status-msg"></div>
+  </div>
+</div>
+
+<!-- 2. 최초 스튜디오 본체(.html) 등록 화면 -->
+<div id="uploadScreen" class="screen-center">
+  <div class="auth-card">
+    <h1>🚀 스튜디오 본체 파일 최초 등록</h1>
+    <div class="auth-sub">
+      비공개 금고 연결에 성공했습니다!<br>
+      가지고 계신 <b>스튜디오_v9.3.html</b> 파일을 아래에 올려주시면 서버에 등록되며, 이후 PC와 스마트폰 어디서든 즉시 실행됩니다.
+    </div>
+    <div class="upload-zone" id="initDropZone" onclick="document.getElementById('htmlUpdaterInput').click()">
+      <div style="font-size:0.95rem; font-weight:800; color:#7dd3fc;">📂 클릭하거나 스튜디오 .html 파일을 끌어다 놓으세요</div>
+      <div style="font-size:0.78rem; color:#94a3b8; margin-top:6px;">앞으로 새 버전(.html)이 나와도 상단 [앱 업데이트] 버튼으로 언제든 교체할 수 있습니다.</div>
+    </div>
+    <div id="uploadMsg" class="status-msg"></div>
+  </div>
+</div>
+
+<!-- 3. 실제 스튜디오 실행 래퍼 -->
+<div id="appWrap">
+  <div id="cloudBar">
+    <div class="cbar-left">
+      <span id="cloudDot" class="c-dot"></span>
+      <span id="cloudStatusText" class="c-status-txt">클라우드 연결됨</span>
+    </div>
+    <div class="cbar-right">
+      <button type="button" class="c-btn save" onclick="saveToCloudFromStudio()" title="현재 원고와 사전·책갈피를 서버에 즉시 저장합니다 (단축키 Ctrl+S)">☁️ 서버 저장</button>
+      <button type="button" class="c-btn" onclick="pullFromCloudNow()" title="다른 기기(PC/폰)에서 저장한 최신 원고와 이어듣기 위치를 불러옵니다">📥 서버 불러오기</button>
+      <button type="button" class="c-btn update" onclick="document.getElementById('htmlUpdaterInput').click()" title="새 스튜디오 .html 파일을 업로드하여 PC·폰 앱 버전을 동시 업데이트합니다">⬆️ 앱 업데이트(.html)</button>
+      <button type="button" class="c-btn" onclick="resetConnection()" title="토큰 및 저장소 연결 재설정">🔑</button>
+      <button type="button" class="c-btn" onclick="toggleCloudBar(true)" title="상단 클라우드 바 숨기기">▲</button>
+    </div>
+  </div>
+  <div id="frameWrap"></div>
+</div>
+
+<button type="button" id="btnRestoreCloudBar" onclick="toggleCloudBar(false)">☁️ 클라우드 바</button>
+<input type="file" id="htmlUpdaterInput" accept=".html,.htm" style="display:none">
+
+<script>
+(function() {
+  var CFG_KEY = 'magyo_cloud_cfg_v1';
+  var EXCLUDE_SYNC_KEYS = {
+    'magyo_studio_view_mode_v81': true,
+    'magyo_unified_prefs_v81': true,
+    'magyo_cloud_cfg_v1': true
+  };
+
+  var cloudCfg = null;
+  var currentStudioWin = null;
+  var pendingWorkspace = null;
+  var isSaving = false;
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(function() {});
+  }
+
+  function setBoxMsg(id, text, isErr) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (!text) { el.className = 'status-msg'; el.textContent = ''; return; }
+    el.className = isErr ? 'status-msg err' : 'status-msg info';
+    el.textContent = text;
+  }
+
+  function setBarStatus(text, state) {
+    var txtEl = document.getElementById('cloudStatusText');
+    var dotEl = document.getElementById('cloudDot');
+    if (txtEl) txtEl.textContent = text;
+    if (dotEl) {
+      dotEl.className = 'c-dot' + (state === 'syncing' ? ' syncing' : (state === 'error' ? ' error' : ''));
+    }
+  }
+
+  function showScreen(screenId) {
+    document.getElementById('setupScreen').classList.toggle('active', screenId === 'setup');
+    document.getElementById('uploadScreen').classList.toggle('active', screenId === 'upload');
+    document.getElementById('appWrap').classList.toggle('active', screenId === 'app');
+  }
+
+  function sleep(ms) {
+    return new Promise(function(r) { setTimeout(r, ms); });
+  }
+
+  function b64ToUtf8(b64) {
+    var clean = String(b64 || '').replace(/\s+/g, '');
+    var bin = atob(clean);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  async function ghApi(path, method, bodyObj, token) {
+    var headers = {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/vnd.github+json'
+    };
+    var opts = { method: method || 'GET', headers: headers, cache: 'no-store' };
+    if (bodyObj) {
+      headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(bodyObj);
+    }
+    var res = await fetch('https://api.github.com' + path, opts);
+    var data = null;
+    var text = await res.text();
+    if (text) {
+      try { data = JSON.parse(text); } catch (e) { data = { message: text }; }
+    }
+    if (!res.ok) {
+      var err = new Error((data && data.message) ? data.message : ('HTTP ' + res.status));
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  }
+
+  async function ensureVaultRepo(token, vaultName) {
+    var user = await ghApi('/user', 'GET', null, token);
+    var owner = user.login;
+    var repo = null;
+    try {
+      repo = await ghApi('/repos/' + owner + '/' + vaultName, 'GET', null, token);
+    } catch (err) {
+      if (err.status === 404) {
+        repo = await ghApi('/user/repos', 'POST', {
+          name: vaultName,
+          private: true,
+          auto_init: true,
+          description: 'Magyo Studio Private Cloud Vault'
+        }, token);
+        await sleep(1500);
+      } else {
+        throw err;
+      }
+    }
+    var branch = (repo && repo.default_branch) ? repo.default_branch : 'main';
+    try {
+      await ghApi('/repos/' + owner + '/' + vaultName + '/git/ref/heads/' + branch, 'GET', null, token);
+    } catch (refErr) {
+      if (refErr.status === 404 || refErr.status === 409) {
+        await ghApi('/repos/' + owner + '/' + vaultName + '/contents/README.md', 'PUT', {
+          message: 'Initialize private vault',
+          content: btoa('# Magyo Studio Private Vault')
+        }, token);
+        await sleep(900);
+      } else {
+        throw refErr;
+      }
+    }
+    return { token: token, owner: owner, vault: vaultName, branch: branch };
+  }
+
+  async function loadVaultFiles(cfg) {
+    var ref = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/ref/heads/' + cfg.branch, 'GET', null, cfg.token);
+    var commit = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/commits/' + ref.object.sha, 'GET', null, cfg.token);
+    var tree = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/trees/' + commit.tree.sha, 'GET', null, cfg.token);
+
+    var studioSha = null;
+    var wsSha = null;
+    (tree.tree || []).forEach(function(item) {
+      if (item.path === 'studio.html') studioSha = item.sha;
+      if (item.path === 'workspace.json') wsSha = item.sha;
+    });
+
+    var studioHtml = null;
+    var workspace = null;
+    if (studioSha) {
+      var sBlob = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/blobs/' + studioSha, 'GET', null, cfg.token);
+      studioHtml = b64ToUtf8(sBlob.content);
+    }
+    if (wsSha) {
+      var wBlob = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/blobs/' + wsSha, 'GET', null, cfg.token);
+      try { workspace = JSON.parse(b64ToUtf8(wBlob.content)); } catch (e) { workspace = null; }
+    }
+    return { studioHtml: studioHtml, workspace: workspace };
+  }
+
+  async function saveVaultFiles(cfg, filesMap, commitMsg) {
+    var ref = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/ref/heads/' + cfg.branch, 'GET', null, cfg.token);
+    var parentSha = ref.object.sha;
+    var parentCommit = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/commits/' + parentSha, 'GET', null, cfg.token);
+
+    var keys = Object.keys(filesMap);
+    var treeItems = [];
+    for (var i = 0; i < keys.length; i++) {
+      var pathKey = keys[i];
+      var blobRes = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/blobs', 'POST', {
+        content: filesMap[pathKey],
+        encoding: 'utf-8'
+      }, cfg.token);
+      treeItems.push({ path: pathKey, mode: '100644', type: 'blob', sha: blobRes.sha });
+    }
+
+    var newTree = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/trees', 'POST', {
+      base_tree: parentCommit.tree.sha,
+      tree: treeItems
+    }, cfg.token);
+
+    var newCommit = await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/commits', 'POST', {
+      message: commitMsg,
+      tree: newTree.sha,
+      parents: [parentSha]
+    }, cfg.token);
+
+    await ghApi('/repos/' + cfg.owner + '/' + cfg.vault + '/git/refs/heads/' + cfg.branch, 'PATCH', {
+      sha: newCommit.sha,
+      force: true
+    }, cfg.token);
+  }
+
+  function collectSyncStorage() {
+    var out = {};
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (k && k.indexOf('magyo_') === 0 && !EXCLUDE_SYNC_KEYS[k]) {
+        out[k] = localStorage.getItem(k);
+      }
+    }
+    return out;
+  }
+
+  function applySyncStorage(storageObj) {
+    if (!storageObj || typeof storageObj !== 'object') return;
+    Object.keys(storageObj).forEach(function(k) {
+      if (k.indexOf('magyo_') === 0 && !EXCLUDE_SYNC_KEYS[k] && typeof storageObj[k] === 'string') {
+        localStorage.setItem(k, storageObj[k]);
+      }
+    });
+  }
+
+  function injectCloudBridge(rawHtml) {
+    var bridgeLines = [
+      '<' + 'script id="magyoCloudBridge">',
+      '(function(){',
+      '  window.__cloudGetWorkspace = function() {',
+      '    try {',
+      '      if (typeof activeEditingLineIdx !== "undefined" && activeEditingLineIdx !== null && typeof saveInlineEdit === "function") {',
+      '        saveInlineEdit(activeEditingLineIdx);',
+      '      }',
+      '      var mTa = document.getElementById("masterText");',
+      '      if (mTa && typeof fileTabs !== "undefined" && fileTabs[activeTabIdx]) {',
+      '        fileTabs[activeTabIdx].text = mTa.value;',
+      '      }',
+      '      var tabsData = (typeof fileTabs !== "undefined" ? fileTabs : []).map(function(t) {',
+      '        return { id: t.id, name: t.name, text: t.text || "", hadCrlf: t.hadCrlf !== false };',
+      '      });',
+      '      return { activeTabIdx: typeof activeTabIdx === "number" ? activeTabIdx : 0, tabs: tabsData };',
+      '    } catch (err) { return null; }',
+      '  };',
+      '  window.__cloudSetWorkspace = function(ws) {',
+      '    if (!ws || !Array.isArray(ws.tabs) || ws.tabs.length === 0) return;',
+      '    try {',
+      '      fileTabs = ws.tabs.map(function(t, i) {',
+      '        return {',
+      '          id: t.id || ("tab_" + i),',
+      '          name: t.name || ("원고_" + (i + 1) + ".txt"),',
+      '          text: typeof t.text === "string" ? t.text : "",',
+      '          handle: null,',
+      '          hadCrlf: t.hadCrlf !== false,',
+      '          undoStack: [],',
+      '          episodes: [],',
+      '          totalIssues: 0,',
+      '          totalMeta: 0',
+      '        };',
+      '      });',
+      '      activeTabIdx = (typeof ws.activeTabIdx === "number" && ws.activeTabIdx >= 0 && ws.activeTabIdx < fileTabs.length) ? ws.activeTabIdx : 0;',
+      '      if (typeof activeEditingLineIdx !== "undefined") activeEditingLineIdx = null;',
+      '      var mTa = document.getElementById("masterText");',
+      '      if (mTa && fileTabs[activeTabIdx]) mTa.value = fileTabs[activeTabIdx].text;',
+      '      if (typeof analyzeAllTabs === "function") analyzeAllTabs(false);',
+      '    } catch (err) { console.error(err); }',
+      '  };',
+      '  saveCurrentText = window.saveCurrentText = async function() {',
+      '    if (typeof activeEditingLineIdx !== "undefined" && activeEditingLineIdx !== null && typeof saveInlineEdit === "function") {',
+      '      saveInlineEdit(activeEditingLineIdx);',
+      '    }',
+      '    if (typeof confirmMetaBeforeExport === "function" && typeof getActiveTab === "function") {',
+      '      if (!confirmMetaBeforeExport("클라우드 서버 저장", [getActiveTab()])) return;',
+      '    }',
+      '    if (window.parent && typeof window.parent.saveToCloudFromStudio === "function") {',
+      '      await window.parent.saveToCloudFromStudio();',
+      '    }',
+      '  };',
+      '  if (typeof window.v93TtsPause === "function") {',
+      '    var origPause = window.v93TtsPause;',
+      '    window.v93TtsPause = function() {',
+      '      origPause();',
+      '      if (window.parent && typeof window.parent.saveToCloudSilent === "function") {',
+      '        window.parent.saveToCloudSilent();',
+      '      }',
+      '    };',
+      '  }',
+      '  if (window.parent && typeof window.parent.__onBridgeReady === "function") {',
+      '    window.parent.__onBridgeReady(window);',
+      '  }',
+      '})();',
+      '<' + '/script>'
+    ].join('\n');
+
+    var cleanHtml = String(rawHtml || '').replace(/<script id="magyoCloudBridge">[\s\S]*?<\/script>/gi, '');
+    var lower = cleanHtml.toLowerCase();
+    var bodyPos = lower.lastIndexOf('<' + '/body>');
+    if (bodyPos !== -1) {
+      return cleanHtml.slice(0, bodyPos) + '\n' + bridgeLines + '\n' + cleanHtml.slice(bodyPos);
+    }
+    return cleanHtml + '\n' + bridgeLines;
+  }
+
+  function mountStudioHtml(studioHtml, workspace) {
+    pendingWorkspace = workspace || null;
+    if (workspace && workspace.storage) {
+      applySyncStorage(workspace.storage);
+    }
+    showScreen('app');
+    var wrap = document.getElementById('frameWrap');
+    wrap.innerHTML = '';
+    var ifr = document.createElement('iframe');
+    ifr.id = 'studioFrame';
+    ifr.allow = 'clipboard-read; clipboard-write; screen-wake-lock; autoplay';
+    ifr.srcdoc = injectCloudBridge(studioHtml);
+    wrap.appendChild(ifr);
+    window._latestRawStudioHtml = studioHtml;
+    var stamp = (workspace && workspace.savedAtKr) ? workspace.savedAtKr : '방금 연결됨';
+    setBarStatus('클라우드 동기화됨 (' + stamp + ')', 'ok');
+  }
+
+  window.__onBridgeReady = function(studioWin) {
+    currentStudioWin = studioWin;
+    if (pendingWorkspace && typeof studioWin.__cloudSetWorkspace === 'function') {
+      studioWin.__cloudSetWorkspace(pendingWorkspace);
+    }
+  };
+
+  window.connectVault = async function() {
+    var token = (document.getElementById('inpToken').value || '').trim();
+    var vault = (document.getElementById('inpVault').value || 'magyo-studio-vault').trim().replace(/[^A-Za-z0-9._-]/g, '-');
+    if (!token) {
+      setBoxMsg('setupMsg', 'GitHub 비밀 토큰(ghp_...)을 입력해 주세요.', true);
+      return;
+    }
+    var btn = document.getElementById('btnConnect');
+    btn.disabled = true;
+    setBoxMsg('setupMsg', '비공개 원고 금고 확인 및 서버 연결 중입니다...', false);
+
+    try {
+      var cfg = await ensureVaultRepo(token, vault);
+      cloudCfg = cfg;
+      localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+      setBoxMsg('setupMsg', '금고 데이터를 불러오는 중입니다...', false);
+
+      var loaded = await loadVaultFiles(cfg);
+      if (!loaded.studioHtml) {
+        showScreen('upload');
+      } else {
+        mountStudioHtml(loaded.studioHtml, loaded.workspace);
+      }
+    } catch (err) {
+      setBoxMsg('setupMsg', '연결 실패: ' + err.message + ' (ghp_ 클래식 토큰 및 repo 권한 체크 여부를 확인해 주세요)', true);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  window.saveToCloudFromStudio = async function(silent) {
+    if (!cloudCfg || !currentStudioWin || isSaving) return;
+    isSaving = true;
+    setBarStatus('서버 저장 중...', 'syncing');
+    try {
+      var ws = currentStudioWin.__cloudGetWorkspace ? currentStudioWin.__cloudGetWorkspace() : { activeTabIdx: 0, tabs: [] };
+      var nowStr = new Date().toLocaleString('ko-KR', { hour12: false });
+      var payload = {
+        savedAtKr: nowStr,
+        activeTabIdx: ws ? ws.activeTabIdx : 0,
+        tabs: ws ? ws.tabs : [],
+        storage: collectSyncStorage()
+      };
+      await saveVaultFiles(cloudCfg, { 'workspace.json': JSON.stringify(payload) }, 'Sync workspace ' + nowStr);
+      setBarStatus('서버 저장 완료 (' + nowStr + ')', 'ok');
+      if (!silent && typeof currentStudioWin.showToast === 'function') {
+        currentStudioWin.showToast('☁️ 클라우드 서버 저장 완료! (PC·모바일 즉시 연동)');
+      }
+    } catch (err) {
+      setBarStatus('저장 오류: ' + err.message, 'error');
+      if (!silent && typeof currentStudioWin.showToast === 'function') {
+        currentStudioWin.showToast('🚨 서버 저장 실패: ' + err.message);
+      }
+    } finally {
+      isSaving = false;
+    }
+  };
+
+  window.saveToCloudSilent = function() {
+    window.saveToCloudFromStudio(true);
+  };
+
+  window.pullFromCloudNow = async function() {
+    if (!cloudCfg) return;
+    setBarStatus('최신 데이터 불러오는 중...', 'syncing');
+    try {
+      var loaded = await loadVaultFiles(cloudCfg);
+      if (loaded.studioHtml) {
+        mountStudioHtml(loaded.studioHtml, loaded.workspace);
+        setTimeout(function() {
+          if (currentStudioWin && typeof currentStudioWin.showToast === 'function') {
+            currentStudioWin.showToast('📥 서버에서 최신 원고·사전·이어듣기 위치를 불러왔습니다!');
+          }
+        }, 250);
+      } else {
+        showScreen('upload');
+      }
+    } catch (err) {
+      setBarStatus('불러오기 실패: ' + err.message, 'error');
+    }
+  };
+
+  async function handleStudioHtmlUpload(file) {
+    if (!file || !cloudCfg) return;
+    setBoxMsg('uploadMsg', file.name + ' 파일을 서버에 등록하는 중입니다...', false);
+    setBarStatus('스튜디오 앱 버전 업데이트 중...', 'syncing');
+
+    try {
+      var htmlText = await file.text();
+      if (htmlText.indexOf('<html') === -1 && htmlText.indexOf('<!DOCTYPE') === -1) {
+        throw new Error('올바른 스튜디오 HTML 파일이 아닙니다.');
+      }
+
+      var filesToSave = { 'studio.html': htmlText };
+      var latestWs = null;
+      if (currentStudioWin && typeof currentStudioWin.__cloudGetWorkspace === 'function') {
+        var ws = currentStudioWin.__cloudGetWorkspace();
+        var nowStr = new Date().toLocaleString('ko-KR', { hour12: false });
+        latestWs = {
+          savedAtKr: nowStr,
+          activeTabIdx: ws ? ws.activeTabIdx : 0,
+          tabs: ws ? ws.tabs : [],
+          storage: collectSyncStorage()
+        };
+        filesToSave['workspace.json'] = JSON.stringify(latestWs);
+      } else {
+        var prev = await loadVaultFiles(cloudCfg);
+        latestWs = prev.workspace;
+      }
+
+      await saveVaultFiles(cloudCfg, filesToSave, 'Update studio app: ' + file.name);
+      mountStudioHtml(htmlText, latestWs);
+      setTimeout(function() {
+        if (currentStudioWin && typeof currentStudioWin.showToast === 'function') {
+          currentStudioWin.showToast('🚀 [' + file.name + '] 클라우드 앱 업데이트 완료!');
+        }
+      }, 300);
+    } catch (err) {
+      setBoxMsg('uploadMsg', '업로드 실패: ' + err.message, true);
+      setBarStatus('업데이트 실패: ' + err.message, 'error');
+    }
+  }
+
+  document.getElementById('htmlUpdaterInput').addEventListener('change', function(e) {
+    var f = e.target.files && e.target.files[0];
+    if (f) handleStudioHtmlUpload(f);
+    e.target.value = '';
+  });
+
+  var dz = document.getElementById('initDropZone');
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); });
+  dz.addEventListener('drop', function(e) {
+    e.preventDefault();
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleStudioHtmlUpload(e.dataTransfer.files[0]);
+    }
+  });
+
+  window.toggleCloudBar = function(hide) {
+    document.getElementById('cloudBar').classList.toggle('collapsed', Boolean(hide));
+    document.getElementById('btnRestoreCloudBar').classList.toggle('show', Boolean(hide));
+  };
+
+  window.resetConnection = function() {
+    if (!confirm('이 기기에 저장된 서버 연결 정보를 초기화하시겠습니까? (서버에 저장된 원고는 삭제되지 않습니다)')) return;
+    localStorage.removeItem(CFG_KEY);
+    cloudCfg = null;
+    currentStudioWin = null;
+    showScreen('setup');
+  };
+
+  // 자동 로그인 기동
+  (async function boot() {
+    try {
+      var saved = JSON.parse(localStorage.getItem(CFG_KEY) || 'null');
+      if (saved && saved.token && saved.owner && saved.vault) {
+        cloudCfg = saved;
+        document.getElementById('inpToken').value = saved.token;
+        document.getElementById('inpVault').value = saved.vault;
+        showScreen('setup');
+        setBoxMsg('setupMsg', '저장된 비공개 금고에서 스튜디오를 불러오는 중입니다...', false);
+        var loaded = await loadVaultFiles(saved);
+        if (!loaded.studioHtml) showScreen('upload');
+        else mountStudioHtml(loaded.studioHtml, loaded.workspace);
+        return;
+      }
+    } catch (e) {}
+    showScreen('setup');
+  })();
+})();
+</script>
+</body>
+</html>
