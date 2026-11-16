@@ -1,20 +1,19 @@
 {
-"name": "올인원 퇴고 스튜디오 클라우드",
-"short_name": "퇴고스튜디오",
-"description": "PC·모바일 실시간 원고 동기화 및 앱 내 버전 업데이트 지원 스튜디오",
-"start_url": "./",
-"scope": "./",
-"display": "standalone",
-"orientation": "any",
-"background_color": "#0b1120",
-"theme_color": "#0b1120",
-"lang": "ko",
-"icons": [
-{
-"src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%230b1120'/%3E%3Crect x='28' y='28' width='456' height='456' rx='92' fill='%23141e34' stroke='%2338bdf8' stroke-width='12'/%3E%3Cpolygon points='82,296 154,276 400,276 420,312 348,334 164,334' fill='%2338bdf8'/%3E%3Cpolygon points='194,334 328,334 348,394 174,394' fill='%2394a3b8'/%3E%3Crect x='132' y='388' width='258' height='42' rx='12' fill='%23e2e8f0'/%3E%3Cpolygon points='318,92 344,112 250,220 224,200' fill='%23f59e0b'/%3E%3Cpolygon points='184,164 250,122 296,184 230,230' fill='%23f8fafc' stroke='%2338bdf8' stroke-width='6'/%3E%3Ccircle cx='246' cy='250' r='12' fill='%23fde68a'/%3E%3C/svg%3E",
-"sizes": "192x192 512x512",
-"type": "image/svg+xml",
-"purpose": "any maskable"
-}
- ]
+  "name": "올인원 퇴고 스튜디오",
+  "short_name": "퇴고스튜디오",
+  "description": "마교를 압류한 대장장이 전용 클라우드 퇴고 스튜디오",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b1120",
+  "theme_color": "#0b1120",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%230f172a'/%3E%3Crect x='24' y='24' width='464' height='464' rx='92' fill='none' stroke='%2338bdf8' stroke-width='14' opacity='0.45'/%3E%3Cpath d='M136 330h240l24 62H112z' fill='%23475569'/%3E%3Cpath d='M96 274h300c0 36-36 56-76 56H156c-34 0-60-22-60-56z' fill='%2394a3b8'/%3E%3Cg transform='rotate(-35 266 186)'%3E%3Crect x='248' y='150' width='36' height='175' rx='12' fill='%23f59e0b'/%3E%3Crect x='186' y='96' width='160' height='68' rx='14' fill='%2338bdf8'/%3E%3C/g%3E%3Ccircle cx='380' cy='150' r='12' fill='%23facc15'/%3E%3Ccircle cx='412' cy='192' r='8' fill='%23fb7185'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }
