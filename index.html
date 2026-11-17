@@ -95,7 +95,7 @@
 <!-- 1. 최초 1회 서버 연결 화면 -->
 <div id="setupScreen" class="screen-center">
   <div class="auth-card">
-    <h1>⚒️ 퇴고 스튜디오 클라우드</h1>
+    <h1>⚒️ 스튜디오 클라우드</h1>
     <div class="auth-sub">원고·사전·오디오북 책갈피는 100% 본인 전용 비공개(Private) 금고에 격리 저장됩니다.</div>
 
     <label class="field-lbl" for="inpToken">1. GitHub 비밀 토큰 (ghp_...)</label>
@@ -3442,5 +3442,194 @@
 </script>
  
 <script src="./v99-save-patch.js"></script>
+
+<!-- ===== [최상단 바 통합 좌우 롤링 + 2차 패턴 레이더 접기/펼치기 애드온] ===== -->
+<style id="cloudBarRollAndRadarFoldStyle">
+  /* 1. 최상단 클라우드 바(왼쪽 '저장됨' ~ 오른쪽 끝 버튼) 단일 트랙 좌우 롤링 */
+  #cloudBar {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    justify-content: flex-start !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    -webkit-overflow-scrolling: touch !important;
+    scrollbar-width: none !important;
+    touch-action: pan-x !important;
+    gap: 6px !important;
+  }
+  #cloudBar.collapsed {
+    display: none !important;
+  }
+  #cloudBar::-webkit-scrollbar {
+    display: none !important;
+  }
+  #cloudBar .cbar-left,
+  #cloudBar .cbar-right {
+    display: inline-flex !important;
+    flex: 0 0 auto !important;
+    flex-shrink: 0 !important;
+    flex-wrap: nowrap !important;
+    overflow: visible !important;
+    max-width: none !important;
+    align-items: center !important;
+    gap: 5px !important;
+  }
+  #cloudBar .cbar-right {
+    margin-left: auto !important;
+  }
+  #cloudBar .cbar-left > *,
+  #cloudBar .cbar-right > * {
+    flex-shrink: 0 !important;
+    white-space: nowrap !important;
+    touch-action: pan-x !important;
+  }
+</style>
+
+<script id="cloudBarRollAndRadarFoldScript">
+(function() {
+  if (window.__CLOUDBAR_ROLL_RADAR_FOLD_V1) return;
+  window.__CLOUDBAR_ROLL_RADAR_FOLD_V1 = true;
+
+  var origGetById = Document.prototype.getElementById;
+  var radarManualOpen = false;
+
+  // 최상단 왼쪽에 들어온 '저장됨/미저장' 배지의 인라인 고정 스타일 제거 및 순서 정렬
+  function keepSavePillInRollingBar() {
+    var barLeft = document.querySelector('#cloudBar .cbar-left');
+    if (!barLeft) return;
+    var dot = origGetById.call(document, 'cloudDot');
+    var pills = barLeft.querySelectorAll('[data-v99-docked], .docked-bar-pill');
+    for (var i = 0; i < pills.length; i++) {
+      var p = pills[i];
+      p.style.setProperty('position', 'static', 'important');
+      p.style.setProperty('inset', 'auto', 'important');
+      p.style.setProperty('transform', 'none', 'important');
+      p.style.setProperty('flex-shrink', '0', 'important');
+      if (/(미저장|통합\s*저장|저장됨)/.test(p.textContent || '')) {
+        var refNode = dot ? dot.nextSibling : barLeft.firstChild;
+        if (refNode !== p) barLeft.insertBefore(p, refNode);
+      }
+    }
+  }
+
+  // 내부 뷰어(#studioFrame) 안의 '2차 패턴 레이더' 의심 어휘 0건 시 접기/펼치기
+  function syncRadarCollapsible(sw) {
+    if (!sw || !sw.document || !sw.document.body) return;
+    var doc = sw.document;
+
+    if (!doc.getElementById('v92RadarFoldInnerStyle')) {
+      var st = doc.createElement('style');
+      st.id = 'v92RadarFoldInnerStyle';
+      st.textContent =
+        '#v92RadarBriefingBar.v92-is-collapsed {' +
+        '  padding: 5px 10px !important; margin-bottom: 8px !important; min-height: 0 !important; cursor: pointer !important;' +
+        '}' +
+        '#v92RadarBriefingBar.v92-is-collapsed > *:not(.v92-fold-summary) { display: none !important; }' +
+        '#v92RadarBriefingBar:not(.v92-is-collapsed) > .v92-fold-summary { display: none !important; }' +
+        '.v92-fold-summary {' +
+        '  display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%;' +
+        '  font-size: 0.76rem; font-weight: 700; color: #86efac; line-height: 1.2; user-select: none;' +
+        '}' +
+        '.v92-fold-summary-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }' +
+        '.v92-fold-mini-btn {' +
+        '  background: rgba(15, 23, 42, 0.78); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.35);' +
+        '  border-radius: 6px; padding: 2px 7px; font-size: 0.71rem; font-weight: 700; cursor: pointer; white-space: nowrap; flex-shrink: 0;' +
+        '}' +
+        '.v92-fold-close-btn { margin-left: 6px; vertical-align: middle; }' +
+        'body.paper-theme .v92-fold-summary { color: #166534 !important; }' +
+        'body.paper-theme .v92-fold-mini-btn { background: #fffdf8 !important; color: #44403c !important; border-color: #bfb69e !important; }';
+      (doc.head || doc.documentElement).appendChild(st);
+    }
+
+    var radarBar = doc.getElementById('v92RadarBriefingBar');
+    if (!radarBar) {
+      var blocks = doc.querySelectorAll('div');
+      for (var i = 0; i < blocks.length; i++) {
+        var b = blocks[i];
+        if (b.children.length <= 6 && (b.textContent || '').indexOf('2차 패턴 레이더') !== -1) {
+          radarBar = b;
+          break;
+        }
+      }
+    }
+    if (!radarBar) return;
+
+    var hasSuspect = radarBar.querySelectorAll('.v92-radar-chip, [onclick*="v92AllowRadarWord"]').length > 0;
+    if (hasSuspect) {
+      radarManualOpen = false;
+      radarBar.classList.remove('v92-is-collapsed');
+      var oldClose = radarBar.querySelector('.v92-fold-close-btn');
+      if (oldClose) oldClose.style.display = 'none';
+      return;
+    }
+
+    // 허용어 개수 추출 (예: 허용어 관리 (216) -> 216)
+    var mgrBtn = radarBar.querySelector('button[onclick*="v92OpenAllowManager"]');
+    var cntMatch = mgrBtn ? (mgrBtn.textContent || '').match(/\((\d+)\)/) : null;
+    var mgrLabel = '⚙️ 허용어' + (cntMatch ? '(' + cntMatch[1] + ')' : '');
+
+    // 접혔을 때 보일 1줄 슬림 바 생성
+    var summary = radarBar.querySelector('.v92-fold-summary');
+    if (!summary) {
+      summary = doc.createElement('div');
+      summary.className = 'v92-fold-summary';
+      summary.innerHTML =
+        '<span class="v92-fold-summary-title">📡 2차 레이더 완료 (의심 어휘 없음)</span>' +
+        '<span style="display:inline-flex;gap:5px;align-items:center;flex-shrink:0;">' +
+          '<button type="button" class="v92-fold-mini-btn" data-act="mgr"></button>' +
+          '<button type="button" class="v92-fold-mini-btn" data-act="open">▼ 펼치기</button>' +
+        '</span>';
+      summary.addEventListener('click', function(e) {
+        var mBtn = e.target.closest && e.target.closest('[data-act="mgr"]');
+        if (mBtn) {
+          e.stopPropagation();
+          if (typeof sw.v92OpenAllowManager === 'function') sw.v92OpenAllowManager();
+          return;
+        }
+        e.stopPropagation();
+        radarManualOpen = true;
+        radarBar.classList.remove('v92-is-collapsed');
+      });
+      radarBar.appendChild(summary);
+    }
+    var sumMgrBtn = summary.querySelector('[data-act="mgr"]');
+    if (sumMgrBtn && sumMgrBtn.textContent !== mgrLabel) sumMgrBtn.textContent = mgrLabel;
+
+    // 펼쳐졌을 때 보일 [▲ 접기] 버튼 생성
+    var closeBtn = radarBar.querySelector('.v92-fold-close-btn');
+    if (!closeBtn) {
+      closeBtn = doc.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'v92-fold-mini-btn v92-fold-close-btn';
+      closeBtn.textContent = '▲ 접기';
+      closeBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        radarManualOpen = false;
+        radarBar.classList.add('v92-is-collapsed');
+      });
+      if (mgrBtn) mgrBtn.insertAdjacentElement('afterend', closeBtn);
+      else radarBar.appendChild(closeBtn);
+    }
+    closeBtn.style.display = 'inline-flex';
+
+    if (radarManualOpen) radarBar.classList.remove('v92-is-collapsed');
+    else radarBar.classList.add('v92-is-collapsed');
+  }
+
+  function tick() {
+    keepSavePillInRollingBar();
+    var ifr = origGetById.call(document, 'studioFrame');
+    if (ifr && ifr.contentWindow) {
+      try { syncRadarCollapsible(ifr.contentWindow); } catch (e) {}
+    }
+    syncRadarCollapsible(window);
+  }
+
+  setInterval(tick, 600);
+  setTimeout(tick, 150);
+})();
+</script>
+<!-- ===== [/최상단 바 통합 좌우 롤링 + 2차 패턴 레이더 접기/펼치기 끝] ===== -->
+ 
 </body>
 </html>
