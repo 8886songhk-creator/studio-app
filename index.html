@@ -2557,6 +2557,559 @@
     lineIdx: 0,
     mirror: 0,
     pre
+
+     <!-- ===== v9.8 소설 뷰어 롱프레스 재생 & 가속 스킵 & 회차 검색 애드온 ===== -->
+<style>
+  .v98-search-fab {
+    position: fixed;
+    top: 62px;
+    right: 14px;
+    z-index: 9990;
+    background: rgba(24, 28, 36, 0.88);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 999px;
+    padding: 7px 13px;
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .v98-search-panel {
+    position: fixed;
+    top: 104px;
+    right: 14px;
+    width: min(350px, calc(100vw - 28px));
+    z-index: 9991;
+    background: #181c24;
+    color: #f1f5f9;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 14px;
+    padding: 10px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+    display: none;
+    font-size: 13px;
+  }
+  .v98-search-panel.open { display: block; }
+  .v98-search-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+  .v98-search-input {
+    flex: 1;
+    min-width: 0;
+    background: #0f1319;
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    padding: 7px 9px;
+    font-size: 13px;
+    outline: none;
+  }
+  .v98-search-input:focus { border-color: #60a5fa; }
+  .v98-sbtn {
+    background: #2b3342;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 7px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .v98-sbtn.primary { background: #2563eb; }
+  .v98-search-status {
+    margin-top: 7px;
+    font-size: 11.5px;
+    color: #94a3b8;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .v98-search-list {
+    margin-top: 6px;
+    max-height: 175px;
+    overflow-y: auto;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 4px;
+  }
+  .v98-search-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 7px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.35;
+    color: #e2e8f0;
+  }
+  .v98-search-item:hover, .v98-search-item.active {
+    background: rgba(59, 130, 246, 0.24);
+  }
+  .v98-ep-badge {
+    background: #f59e0b;
+    color: #111827;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .v98-item-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .v98-search-hit {
+    outline: 2px solid #f59e0b !important;
+    background-color: rgba(245, 158, 11, 0.16) !important;
+    border-radius: 6px;
+    transition: background-color 0.3s ease;
+  }
+  .v98-longpress-flash {
+    outline: 2px solid #3b82f6 !important;
+    background-color: rgba(59, 130, 246, 0.24) !important;
+    border-radius: 6px;
+    transition: all 0.25s ease;
+  }
+  .v98-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 92px;
+    transform: translateX(-50%);
+    z-index: 9999;
+    background: rgba(15, 23, 42, 0.92);
+    color: #fff;
+    padding: 8px 15px;
+    border-radius: 999px;
+    font-size: 12.5px;
+    font-weight: 600;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.18s ease;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    white-space: nowrap;
+  }
+  .v98-toast.show { opacity: 1; }
+</style>
+
+<script>
+(function () {
+  if (window.__v98ViewerAddonLoaded) return;
+  window.__v98ViewerAddonLoaded = true;
+
+  const HOLD_SKIP_DELAY = 350;   // 앞뒤 버튼 꾹 누르기 인식 시간(ms)
+  const HOLD_SKIP_INTERVAL = 145; // 연속 이동 간격(ms)
+  const LONG_PRESS_PLAY_MS = 450; // 문장 꾹 누르기 재생 인식 시간(ms)
+  const MOVE_CANCEL_PX = 10;      // 스크롤 판정 이동 거리(px)
+
+  let toastTimer = null;
+  let toastEl = null;
+
+  function showToast(msg) {
+    if (!toastEl) {
+      toastEl = document.createElement('div');
+      toastEl.className = 'v98-toast';
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1100);
+  }
+
+  function getViewerRoot() {
+    return (
+      document.getElementById('highlightViewer') ||
+      document.getElementById('novelViewer') ||
+      document.querySelector('.highlight-viewer')
+    );
+  }
+
+  function getViewerRows() {
+    const root = getViewerRoot();
+    if (!root) return [];
+    let rows = Array.from(root.querySelectorAll('.p-row'));
+    if (!rows.length) rows = Array.from(root.querySelectorAll('[data-line]'));
+    return rows;
+  }
+
+  /* =========================================================
+     1. 문단·문장 앞뒤 건너뛰기 버튼 꾹 누르기 (가속 스킵)
+     ========================================================= */
+  let skipHoldTimer = null;
+  let skipRepeatTimer = null;
+  let skipTickCount = 0;
+  let suppressNextClick = false;
+
+  function detectSkipAction(target) {
+    if (!target || !target.closest) return null;
+    const btn = target.closest('button, [role="button"], [onclick]');
+    if (!btn) return null;
+
+    const onclickStr = btn.getAttribute('onclick') || '';
+    let m = onclickStr.match(/v93TtsStepParagraph\s*\(\s*(-?\d+)\s*\)/);
+    if (m) return { btn, mode: 'para', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
+
+    m = onclickStr.match(/v93TtsStepSentence\s*\(\s*(-?\d+)\s*\)/);
+    if (m) return { btn, mode: 'sent', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
+
+    const meta = [
+      btn.id || '',
+      btn.title || '',
+      btn.getAttribute('aria-label') || '',
+      (btn.textContent || '').trim()
+    ].join(' ');
+
+    if (/이전\s*문단|문단\s*이전|prev.*para|para.*prev/i.test(meta) || /⏮|⏪|◀◀/.test(meta)) {
+      return { btn, mode: 'para', dir: -1 };
+    }
+    if (/다음\s*문단|문단\s*다음|next.*para|para.*next/i.test(meta) || /⏭|⏩|▶▶/.test(meta)) {
+      return { btn, mode: 'para', dir: 1 };
+    }
+    if (/이전\s*문장|prev.*sent|sent.*prev/i.test(meta)) {
+      return { btn, mode: 'sent', dir: -1 };
+    }
+    if (/다음\s*문장|next.*sent|sent.*next/i.test(meta)) {
+      return { btn, mode: 'sent', dir: 1 };
+    }
+    return null;
+  }
+
+  function runSkipStep(action, mult) {
+    const delta = action.dir * mult;
+    if (action.mode === 'para' && typeof window.v93TtsStepParagraph === 'function') {
+      window.v93TtsStepParagraph(delta);
+    } else if (action.mode === 'sent' && typeof window.v93TtsStepSentence === 'function') {
+      window.v93TtsStepSentence(delta);
+    } else if (typeof window.v93TtsStepParagraph === 'function') {
+      window.v93TtsStepParagraph(delta);
+    } else {
+      action.btn.click();
+    }
+    const arrow = delta < 0 ? '⏪ ' : '⏩ ';
+    const sign = delta > 0 ? '+' : '';
+    const unit = action.mode === 'sent' ? '문장' : '문단';
+    showToast(arrow + sign + delta + unit + ' 고속 이동');
+  }
+
+  function clearSkipTimers() {
+    clearTimeout(skipHoldTimer);
+    clearInterval(skipRepeatTimer);
+    skipHoldTimer = null;
+    skipRepeatTimer = null;
+    skipTickCount = 0;
+  }
+
+  document.addEventListener('pointerdown', function (e) {
+    if (e.button && e.button !== 0) return;
+    const action = detectSkipAction(e.target);
+    if (!action) return;
+
+    clearSkipTimers();
+    skipHoldTimer = setTimeout(function () {
+      suppressNextClick = true;
+      if (navigator.vibrate) navigator.vibrate(15);
+      skipTickCount = 0;
+      runSkipStep(action, 1);
+
+      skipRepeatTimer = setInterval(function () {
+        skipTickCount++;
+        const mult = skipTickCount > 15 ? 5 : (skipTickCount > 6 ? 3 : 1);
+        runSkipStep(action, mult);
+      }, HOLD_SKIP_INTERVAL);
+    }, HOLD_SKIP_DELAY);
+  }, true);
+
+  ['pointerup', 'pointercancel', 'blur'].forEach(function (ev) {
+    window.addEventListener(ev, clearSkipTimers, true);
+  });
+
+  document.addEventListener('click', function (e) {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  }, true);
+
+  /* =========================================================
+     2. 뷰어 문장 꾹 눌러 해당 위치부터 오디오 재생
+     ========================================================= */
+  let lpTimer = null;
+  let lpStartX = 0;
+  let lpStartY = 0;
+  let lpActive = false;
+
+  function cancelSentenceLongPress() {
+    clearTimeout(lpTimer);
+    lpTimer = null;
+  }
+
+  function detectSentenceIndex(row, target, clientX, clientY) {
+    const sentSpan = target.closest && target.closest('[data-sent], [data-sidx], [data-sent-idx]');
+    if (sentSpan) {
+      const raw = sentSpan.dataset.sent ?? sentSpan.dataset.sidx ?? sentSpan.dataset.sentIdx;
+      const parsed = parseInt(raw, 10);
+      if (!isNaN(parsed)) return parsed;
+    }
+
+    const textBox = row.querySelector('.p-text') || row;
+    if (document.caretRangeFromPoint) {
+      try {
+        const range = document.caretRangeFromPoint(clientX, clientY);
+        if (range && textBox.contains(range.startContainer)) {
+          const pre = document.createRange();
+          pre.selectNodeContents(textBox);
+          pre.setEnd(range.startContainer, range.startOffset);
+          const beforeText = pre.toString();
+          const splits = beforeText.match(/[.!?…。！？]["'”’)\]]*\s+/g);
+          return splits ? splits.length : 0;
+        }
+      } catch (err) {}
+    }
+    return 0;
+  }
+
+  function playFromRow(row, target, clientX, clientY) {
+    const rows = getViewerRows();
+    let lineIdx = parseInt(row.getAttribute('data-line') ?? row.getAttribute('data-idx'), 10);
+    if (isNaN(lineIdx)) lineIdx = rows.indexOf(row);
+    if (lineIdx < 0) return;
+
+    const sentIdx = detectSentenceIndex(row, target, clientX, clientY);
+
+    row.classList.add('v98-longpress-flash');
+    setTimeout(() => row.classList.remove('v98-longpress-flash'), 750);
+
+    if (window.getSelection) {
+      try { window.getSelection().removeAllRanges(); } catch (err) {}
+    }
+    if (navigator.vibrate) navigator.vibrate(25);
+
+    if (typeof window.v93TtsPlay === 'function') {
+      window.v93TtsPlay(lineIdx, sentIdx);
+      showToast('🔊 ' + (lineIdx + 1) + '번 문단부터 재생합니다');
+    } else {
+      row.click();
+      showToast('🔊 선택한 문장 위치로 이동했습니다');
+    }
+  }
+
+  document.addEventListener('pointerdown', function (e) {
+    if (e.button && e.button !== 0) return;
+    const root = getViewerRoot();
+    if (!root || !root.contains(e.target)) return;
+    if (e.target.closest('button, a, input, textarea, select')) return;
+
+    const row = e.target.closest('.p-row, [data-line]');
+    if (!row) return;
+
+    cancelSentenceLongPress();
+    lpActive = false;
+    lpStartX = e.clientX;
+    lpStartY = e.clientY;
+    const targetEl = e.target;
+
+    lpTimer = setTimeout(function () {
+      lpActive = true;
+      suppressNextClick = true;
+      playFromRow(row, targetEl, lpStartX, lpStartY);
+    }, LONG_PRESS_PLAY_MS);
+  }, true);
+
+  document.addEventListener('pointermove', function (e) {
+    if (!lpTimer) return;
+    if (Math.hypot(e.clientX - lpStartX, e.clientY - lpStartY) > MOVE_CANCEL_PX) {
+      cancelSentenceLongPress();
+    }
+  }, true);
+
+  ['pointerup', 'pointercancel'].forEach(function (ev) {
+    window.addEventListener(ev, cancelSentenceLongPress, true);
+  });
+  window.addEventListener('scroll', cancelSentenceLongPress, true);
+
+  document.addEventListener('contextmenu', function (e) {
+    const root = getViewerRoot();
+    if ((lpTimer || lpActive) && root && root.contains(e.target)) {
+      e.preventDefault();
+      lpActive = false;
+    }
+  }, true);
+
+  /* =========================================================
+     3. 회차·문장 검색 UI 및 해당 구간 이동
+     ========================================================= */
+  let matches = [];
+  let currentMatchPos = -1;
+
+  function clearSearchHighlights() {
+    document.querySelectorAll('.v98-search-hit').forEach(el => el.classList.remove('v98-search-hit'));
+  }
+
+  function buildEpisodeRegex(q) {
+    const epMatch = q.trim().match(/^(?:제\s*)?(\d+)\s*(화|편|장|권)$/);
+    if (!epMatch) return null;
+    const num = epMatch[1];
+    const unit = epMatch[2];
+    return {
+      anyLine: new RegExp('(?:^|[^0-9])' + num + '\\s*' + unit),
+      headerLine: new RegExp('^\\s*[\\[〈<【(#*\\-]*\\s*(?:제\\s*)?' + num + '\\s*' + unit + '(?:[^0-9]|$)')
+    };
+  }
+
+  function initSearchUI() {
+    const fab = document.createElement('button');
+    fab.type = 'button';
+    fab.className = 'v98-search-fab';
+    fab.textContent = '🔍 회차 검색';
+
+    const panel = document.createElement('div');
+    panel.className = 'v98-search-panel';
+    panel.innerHTML =
+      '<div class="v98-search-row">' +
+        '<input type="search" class="v98-search-input" placeholder="예: 10화 또는 본문 단어" />' +
+        '<button type="button" class="v98-sbtn primary" data-act="find">찾기</button>' +
+        '<button type="button" class="v98-sbtn" data-act="prev" title="이전 결과">▲</button>' +
+        '<button type="button" class="v98-sbtn" data-act="next" title="다음 결과">▼</button>' +
+        '<button type="button" class="v98-sbtn" data-act="close" title="닫기">✕</button>' +
+      '</div>' +
+      '<div class="v98-search-status"><span class="v98-status-msg">이동 후 문장을 꾹 누르면 바로 재생됩니다.</span></div>' +
+      '<div class="v98-search-list"></div>';
+
+    document.body.appendChild(fab);
+    document.body.appendChild(panel);
+
+    const input = panel.querySelector('.v98-search-input');
+    const statusMsg = panel.querySelector('.v98-status-msg');
+    const listBox = panel.querySelector('.v98-search-list');
+
+    function jumpToMatch(pos) {
+      if (!matches.length) return;
+      currentMatchPos = (pos + matches.length) % matches.length;
+      clearSearchHighlights();
+
+      const item = matches[currentMatchPos];
+      item.row.classList.add('v98-search-hit');
+      item.row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      statusMsg.textContent =
+        '검색 결과 ' + (currentMatchPos + 1) + ' / ' + matches.length +
+        ' (문장을 꾹 누르면 그곳부터 재생)';
+
+      Array.from(listBox.children).forEach((el, idx) => {
+        el.classList.toggle('active', idx === currentMatchPos);
+      });
+    }
+
+    function runSearch() {
+      const q = input.value.trim();
+      listBox.innerHTML = '';
+      clearSearchHighlights();
+      matches = [];
+      currentMatchPos = -1;
+
+      if (!q) {
+        statusMsg.textContent = '검색할 회차(예: 10화)나 문장을 입력해 주세요.';
+        return;
+      }
+
+      const rows = getViewerRows();
+      if (!rows.length) {
+        statusMsg.textContent = '뷰어에 열린 원고가 없습니다. 먼저 원고를 열어주세요.';
+        return;
+      }
+
+      const epRule = buildEpisodeRegex(q);
+      const qLower = q.toLowerCase();
+      let firstHeaderPos = -1;
+
+      rows.forEach((row, idx) => {
+        const textEl = row.querySelector('.p-text') || row;
+        const text = (textEl.textContent || '').trim();
+        if (!text) return;
+
+        let matched = false;
+        let isHeader = false;
+
+        if (epRule) {
+          if (epRule.anyLine.test(text)) {
+            matched = true;
+            isHeader = text.length < 65 && epRule.headerLine.test(text);
+          }
+        } else if (text.toLowerCase().includes(qLower)) {
+          matched = true;
+          isHeader = text.length < 55 && /^(?:제\s*)?\d+\s*(?:화|편|장)|^프롤로그|^에필로그/.test(text);
+        }
+
+        if (matched) {
+          const lineIdx = parseInt(row.getAttribute('data-line') ?? idx, 10);
+          if (isHeader && firstHeaderPos === -1) firstHeaderPos = matches.length;
+          matches.push({ row, lineIdx: isNaN(lineIdx) ? idx : lineIdx, text, isHeader });
+        }
+      });
+
+      if (!matches.length) {
+        statusMsg.textContent = '"' + q + '" 검색 결과가 없습니다.';
+        return;
+      }
+
+      matches.forEach((m, pos) => {
+        const div = document.createElement('div');
+        div.className = 'v98-search-item';
+        div.innerHTML =
+          (m.isHeader ? '<span class="v98-ep-badge">회차</span>' : '') +
+          '<span class="v98-item-text">#' + (m.lineIdx + 1) + ' ' +
+          m.text.slice(0, 42).replace(/</g, '&lt;') + '</span>';
+        div.addEventListener('click', () => jumpToMatch(pos));
+        listBox.appendChild(div);
+      });
+
+      jumpToMatch(firstHeaderPos !== -1 ? firstHeaderPos : 0);
+    }
+
+    fab.addEventListener('click', () => {
+      const open = panel.classList.toggle('open');
+      if (open) setTimeout(() => input.focus(), 50);
+    });
+
+    panel.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (act === 'find') runSearch();
+      else if (act === 'prev') jumpToMatch(currentMatchPos - 1);
+      else if (act === 'next') jumpToMatch(currentMatchPos + 1);
+      else if (act === 'close') {
+        panel.classList.remove('open');
+        clearSearchHighlights();
+      }
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runSearch();
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSearchUI);
+  } else {
+    initSearchUI();
+  }
+})();
+</script>
+<!-- ===== /v9.8 애드온 끝 ===== -->
 <script src="./v99-save-patch.js"></script>
 </body>
 </html>
