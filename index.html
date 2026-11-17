@@ -2286,560 +2286,6 @@
 })();
 </script>
 <!-- ==================== [/v9.7 올인원 마스터 통합 패치 끝] ==================== -->
-
-     <!-- ===== v9.8 소설 뷰어 롱프레스 재생 & 가속 스킵 & 회차 검색 애드온 ===== -->
-<style>
-  .v98-search-fab {
-    position: fixed;
-    top: 62px;
-    right: 14px;
-    z-index: 9990;
-    background: rgba(24, 28, 36, 0.88);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 999px;
-    padding: 7px 13px;
-    font-size: 13px;
-    font-weight: 600;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-    cursor: pointer;
-    backdrop-filter: blur(6px);
-    -webkit-tap-highlight-color: transparent;
-    user-select: none;
-  }
-  .v98-search-panel {
-    position: fixed;
-    top: 104px;
-    right: 14px;
-    width: min(350px, calc(100vw - 28px));
-    z-index: 9991;
-    background: #181c24;
-    color: #f1f5f9;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 14px;
-    padding: 10px;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
-    display: none;
-    font-size: 13px;
-  }
-  .v98-search-panel.open { display: block; }
-  .v98-search-row {
-    display: flex;
-    gap: 5px;
-    align-items: center;
-  }
-  .v98-search-input {
-    flex: 1;
-    min-width: 0;
-    background: #0f1319;
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 8px;
-    padding: 7px 9px;
-    font-size: 13px;
-    outline: none;
-  }
-  .v98-search-input:focus { border-color: #60a5fa; }
-  .v98-sbtn {
-    background: #2b3342;
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    padding: 7px 9px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .v98-sbtn.primary { background: #2563eb; }
-  .v98-search-status {
-    margin-top: 7px;
-    font-size: 11.5px;
-    color: #94a3b8;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .v98-search-list {
-    margin-top: 6px;
-    max-height: 175px;
-    overflow-y: auto;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    padding-top: 4px;
-  }
-  .v98-search-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 7px;
-    border-radius: 7px;
-    cursor: pointer;
-    font-size: 12px;
-    line-height: 1.35;
-    color: #e2e8f0;
-  }
-  .v98-search-item:hover, .v98-search-item.active {
-    background: rgba(59, 130, 246, 0.24);
-  }
-  .v98-ep-badge {
-    background: #f59e0b;
-    color: #111827;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 1px 5px;
-    border-radius: 4px;
-    flex-shrink: 0;
-  }
-  .v98-item-text {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .v98-search-hit {
-    outline: 2px solid #f59e0b !important;
-    background-color: rgba(245, 158, 11, 0.16) !important;
-    border-radius: 6px;
-    transition: background-color 0.3s ease;
-  }
-  .v98-longpress-flash {
-    outline: 2px solid #3b82f6 !important;
-    background-color: rgba(59, 130, 246, 0.24) !important;
-    border-radius: 6px;
-    transition: all 0.25s ease;
-  }
-  .v98-toast {
-    position: fixed;
-    left: 50%;
-    bottom: 92px;
-    transform: translateX(-50%);
-    z-index: 9999;
-    background: rgba(15, 23, 42, 0.92);
-    color: #fff;
-    padding: 8px 15px;
-    border-radius: 999px;
-    font-size: 12.5px;
-    font-weight: 600;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.18s ease;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-    white-space: nowrap;
-  }
-  .v98-toast.show { opacity: 1; }
-</style>
-
-<script>
-(function () {
-  if (window.__v98ViewerAddonLoaded) return;
-  window.__v98ViewerAddonLoaded = true;
-
-  const HOLD_SKIP_DELAY = 350;   // 앞뒤 버튼 꾹 누르기 인식 시간(ms)
-  const HOLD_SKIP_INTERVAL = 145; // 연속 이동 간격(ms)
-  const LONG_PRESS_PLAY_MS = 450; // 문장 꾹 누르기 재생 인식 시간(ms)
-  const MOVE_CANCEL_PX = 10;      // 스크롤 판정 이동 거리(px)
-
-  let toastTimer = null;
-  let toastEl = null;
-
-  function showToast(msg) {
-    if (!toastEl) {
-      toastEl = document.createElement('div');
-      toastEl.className = 'v98-toast';
-      document.body.appendChild(toastEl);
-    }
-    toastEl.textContent = msg;
-    toastEl.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1100);
-  }
-
-  function getViewerRoot() {
-    return (
-      document.getElementById('highlightViewer') ||
-      document.getElementById('novelViewer') ||
-      document.querySelector('.highlight-viewer')
-    );
-  }
-
-  function getViewerRows() {
-    const root = getViewerRoot();
-    if (!root) return [];
-    let rows = Array.from(root.querySelectorAll('.p-row'));
-    if (!rows.length) rows = Array.from(root.querySelectorAll('[data-line]'));
-    return rows;
-  }
-
-  /* =========================================================
-     1. 문단·문장 앞뒤 건너뛰기 버튼 꾹 누르기 (가속 스킵)
-     ========================================================= */
-  let skipHoldTimer = null;
-  let skipRepeatTimer = null;
-  let skipTickCount = 0;
-  let suppressNextClick = false;
-
-  function detectSkipAction(target) {
-    if (!target || !target.closest) return null;
-    const btn = target.closest('button, [role="button"], [onclick]');
-    if (!btn) return null;
-
-    const onclickStr = btn.getAttribute('onclick') || '';
-    let m = onclickStr.match(/v93TtsStepParagraph\s*\(\s*(-?\d+)\s*\)/);
-    if (m) return { btn, mode: 'para', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
-
-    m = onclickStr.match(/v93TtsStepSentence\s*\(\s*(-?\d+)\s*\)/);
-    if (m) return { btn, mode: 'sent', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
-
-    const meta = [
-      btn.id || '',
-      btn.title || '',
-      btn.getAttribute('aria-label') || '',
-      (btn.textContent || '').trim()
-    ].join(' ');
-
-    if (/이전\s*문단|문단\s*이전|prev.*para|para.*prev/i.test(meta) || /⏮|⏪|◀◀/.test(meta)) {
-      return { btn, mode: 'para', dir: -1 };
-    }
-    if (/다음\s*문단|문단\s*다음|next.*para|para.*next/i.test(meta) || /⏭|⏩|▶▶/.test(meta)) {
-      return { btn, mode: 'para', dir: 1 };
-    }
-    if (/이전\s*문장|prev.*sent|sent.*prev/i.test(meta)) {
-      return { btn, mode: 'sent', dir: -1 };
-    }
-    if (/다음\s*문장|next.*sent|sent.*next/i.test(meta)) {
-      return { btn, mode: 'sent', dir: 1 };
-    }
-    return null;
-  }
-
-  function runSkipStep(action, mult) {
-    const delta = action.dir * mult;
-    if (action.mode === 'para' && typeof window.v93TtsStepParagraph === 'function') {
-      window.v93TtsStepParagraph(delta);
-    } else if (action.mode === 'sent' && typeof window.v93TtsStepSentence === 'function') {
-      window.v93TtsStepSentence(delta);
-    } else if (typeof window.v93TtsStepParagraph === 'function') {
-      window.v93TtsStepParagraph(delta);
-    } else {
-      action.btn.click();
-    }
-    const arrow = delta < 0 ? '⏪ ' : '⏩ ';
-    const sign = delta > 0 ? '+' : '';
-    const unit = action.mode === 'sent' ? '문장' : '문단';
-    showToast(arrow + sign + delta + unit + ' 고속 이동');
-  }
-
-  function clearSkipTimers() {
-    clearTimeout(skipHoldTimer);
-    clearInterval(skipRepeatTimer);
-    skipHoldTimer = null;
-    skipRepeatTimer = null;
-    skipTickCount = 0;
-  }
-
-  document.addEventListener('pointerdown', function (e) {
-    if (e.button && e.button !== 0) return;
-    const action = detectSkipAction(e.target);
-    if (!action) return;
-
-    clearSkipTimers();
-    skipHoldTimer = setTimeout(function () {
-      suppressNextClick = true;
-      if (navigator.vibrate) navigator.vibrate(15);
-      skipTickCount = 0;
-      runSkipStep(action, 1);
-
-      skipRepeatTimer = setInterval(function () {
-        skipTickCount++;
-        const mult = skipTickCount > 15 ? 5 : (skipTickCount > 6 ? 3 : 1);
-        runSkipStep(action, mult);
-      }, HOLD_SKIP_INTERVAL);
-    }, HOLD_SKIP_DELAY);
-  }, true);
-
-  ['pointerup', 'pointercancel', 'blur'].forEach(function (ev) {
-    window.addEventListener(ev, clearSkipTimers, true);
-  });
-
-  document.addEventListener('click', function (e) {
-    if (suppressNextClick) {
-      suppressNextClick = false;
-      e.stopImmediatePropagation();
-      e.preventDefault();
-    }
-  }, true);
-
-  /* =========================================================
-     2. 뷰어 문장 꾹 눌러 해당 위치부터 오디오 재생
-     ========================================================= */
-  let lpTimer = null;
-  let lpStartX = 0;
-  let lpStartY = 0;
-  let lpActive = false;
-
-  function cancelSentenceLongPress() {
-    clearTimeout(lpTimer);
-    lpTimer = null;
-  }
-
-  function detectSentenceIndex(row, target, clientX, clientY) {
-    const sentSpan = target.closest && target.closest('[data-sent], [data-sidx], [data-sent-idx]');
-    if (sentSpan) {
-      const raw = sentSpan.dataset.sent ?? sentSpan.dataset.sidx ?? sentSpan.dataset.sentIdx;
-      const parsed = parseInt(raw, 10);
-      if (!isNaN(parsed)) return parsed;
-    }
-
-    const textBox = row.querySelector('.p-text') || row;
-    if (document.caretRangeFromPoint) {
-      try {
-        const range = document.caretRangeFromPoint(clientX, clientY);
-        if (range && textBox.contains(range.startContainer)) {
-          const pre = document.createRange();
-          pre.selectNodeContents(textBox);
-          pre.setEnd(range.startContainer, range.startOffset);
-          const beforeText = pre.toString();
-          const splits = beforeText.match(/[.!?…。！？]["'”’)\]]*\s+/g);
-          return splits ? splits.length : 0;
-        }
-      } catch (err) {}
-    }
-    return 0;
-  }
-
-  function playFromRow(row, target, clientX, clientY) {
-    const rows = getViewerRows();
-    let lineIdx = parseInt(row.getAttribute('data-line') ?? row.getAttribute('data-idx'), 10);
-    if (isNaN(lineIdx)) lineIdx = rows.indexOf(row);
-    if (lineIdx < 0) return;
-
-    const sentIdx = detectSentenceIndex(row, target, clientX, clientY);
-
-    row.classList.add('v98-longpress-flash');
-    setTimeout(() => row.classList.remove('v98-longpress-flash'), 750);
-
-    if (window.getSelection) {
-      try { window.getSelection().removeAllRanges(); } catch (err) {}
-    }
-    if (navigator.vibrate) navigator.vibrate(25);
-
-    if (typeof window.v93TtsPlay === 'function') {
-      window.v93TtsPlay(lineIdx, sentIdx);
-      showToast('🔊 ' + (lineIdx + 1) + '번 문단부터 재생합니다');
-    } else {
-      row.click();
-      showToast('🔊 선택한 문장 위치로 이동했습니다');
-    }
-  }
-
-  document.addEventListener('pointerdown', function (e) {
-    if (e.button && e.button !== 0) return;
-    const root = getViewerRoot();
-    if (!root || !root.contains(e.target)) return;
-    if (e.target.closest('button, a, input, textarea, select')) return;
-
-    const row = e.target.closest('.p-row, [data-line]');
-    if (!row) return;
-
-    cancelSentenceLongPress();
-    lpActive = false;
-    lpStartX = e.clientX;
-    lpStartY = e.clientY;
-    const targetEl = e.target;
-
-    lpTimer = setTimeout(function () {
-      lpActive = true;
-      suppressNextClick = true;
-      playFromRow(row, targetEl, lpStartX, lpStartY);
-    }, LONG_PRESS_PLAY_MS);
-  }, true);
-
-  document.addEventListener('pointermove', function (e) {
-    if (!lpTimer) return;
-    if (Math.hypot(e.clientX - lpStartX, e.clientY - lpStartY) > MOVE_CANCEL_PX) {
-      cancelSentenceLongPress();
-    }
-  }, true);
-
-  ['pointerup', 'pointercancel'].forEach(function (ev) {
-    window.addEventListener(ev, cancelSentenceLongPress, true);
-  });
-  window.addEventListener('scroll', cancelSentenceLongPress, true);
-
-  document.addEventListener('contextmenu', function (e) {
-    const root = getViewerRoot();
-    if ((lpTimer || lpActive) && root && root.contains(e.target)) {
-      e.preventDefault();
-      lpActive = false;
-    }
-  }, true);
-
-  /* =========================================================
-     3. 회차·문장 검색 UI 및 해당 구간 이동
-     ========================================================= */
-  let matches = [];
-  let currentMatchPos = -1;
-
-  function clearSearchHighlights() {
-    document.querySelectorAll('.v98-search-hit').forEach(el => el.classList.remove('v98-search-hit'));
-  }
-
-  function buildEpisodeRegex(q) {
-    const epMatch = q.trim().match(/^(?:제\s*)?(\d+)\s*(화|편|장|권)$/);
-    if (!epMatch) return null;
-    const num = epMatch[1];
-    const unit = epMatch[2];
-    return {
-      anyLine: new RegExp('(?:^|[^0-9])' + num + '\\s*' + unit),
-      headerLine: new RegExp('^\\s*[\\[〈<【(#*\\-]*\\s*(?:제\\s*)?' + num + '\\s*' + unit + '(?:[^0-9]|$)')
-    };
-  }
-
-  function initSearchUI() {
-    const fab = document.createElement('button');
-    fab.type = 'button';
-    fab.className = 'v98-search-fab';
-    fab.textContent = '🔍 회차 검색';
-
-    const panel = document.createElement('div');
-    panel.className = 'v98-search-panel';
-    panel.innerHTML =
-      '<div class="v98-search-row">' +
-        '<input type="search" class="v98-search-input" placeholder="예: 10화 또는 본문 단어" />' +
-        '<button type="button" class="v98-sbtn primary" data-act="find">찾기</button>' +
-        '<button type="button" class="v98-sbtn" data-act="prev" title="이전 결과">▲</button>' +
-        '<button type="button" class="v98-sbtn" data-act="next" title="다음 결과">▼</button>' +
-        '<button type="button" class="v98-sbtn" data-act="close" title="닫기">✕</button>' +
-      '</div>' +
-      '<div class="v98-search-status"><span class="v98-status-msg">이동 후 문장을 꾹 누르면 바로 재생됩니다.</span></div>' +
-      '<div class="v98-search-list"></div>';
-
-    document.body.appendChild(fab);
-    document.body.appendChild(panel);
-
-    const input = panel.querySelector('.v98-search-input');
-    const statusMsg = panel.querySelector('.v98-status-msg');
-    const listBox = panel.querySelector('.v98-search-list');
-
-    function jumpToMatch(pos) {
-      if (!matches.length) return;
-      currentMatchPos = (pos + matches.length) % matches.length;
-      clearSearchHighlights();
-
-      const item = matches[currentMatchPos];
-      item.row.classList.add('v98-search-hit');
-      item.row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-      statusMsg.textContent =
-        '검색 결과 ' + (currentMatchPos + 1) + ' / ' + matches.length +
-        ' (문장을 꾹 누르면 그곳부터 재생)';
-
-      Array.from(listBox.children).forEach((el, idx) => {
-        el.classList.toggle('active', idx === currentMatchPos);
-      });
-    }
-
-    function runSearch() {
-      const q = input.value.trim();
-      listBox.innerHTML = '';
-      clearSearchHighlights();
-      matches = [];
-      currentMatchPos = -1;
-
-      if (!q) {
-        statusMsg.textContent = '검색할 회차(예: 10화)나 문장을 입력해 주세요.';
-        return;
-      }
-
-      const rows = getViewerRows();
-      if (!rows.length) {
-        statusMsg.textContent = '뷰어에 열린 원고가 없습니다. 먼저 원고를 열어주세요.';
-        return;
-      }
-
-      const epRule = buildEpisodeRegex(q);
-      const qLower = q.toLowerCase();
-      let firstHeaderPos = -1;
-
-      rows.forEach((row, idx) => {
-        const textEl = row.querySelector('.p-text') || row;
-        const text = (textEl.textContent || '').trim();
-        if (!text) return;
-
-        let matched = false;
-        let isHeader = false;
-
-        if (epRule) {
-          if (epRule.anyLine.test(text)) {
-            matched = true;
-            isHeader = text.length < 65 && epRule.headerLine.test(text);
-          }
-        } else if (text.toLowerCase().includes(qLower)) {
-          matched = true;
-          isHeader = text.length < 55 && /^(?:제\s*)?\d+\s*(?:화|편|장)|^프롤로그|^에필로그/.test(text);
-        }
-
-        if (matched) {
-          const lineIdx = parseInt(row.getAttribute('data-line') ?? idx, 10);
-          if (isHeader && firstHeaderPos === -1) firstHeaderPos = matches.length;
-          matches.push({ row, lineIdx: isNaN(lineIdx) ? idx : lineIdx, text, isHeader });
-        }
-      });
-
-      if (!matches.length) {
-        statusMsg.textContent = '"' + q + '" 검색 결과가 없습니다.';
-        return;
-      }
-
-      matches.forEach((m, pos) => {
-        const div = document.createElement('div');
-        div.className = 'v98-search-item';
-        div.innerHTML =
-          (m.isHeader ? '<span class="v98-ep-badge">회차</span>' : '') +
-          '<span class="v98-item-text">#' + (m.lineIdx + 1) + ' ' +
-          m.text.slice(0, 42).replace(/</g, '&lt;') + '</span>';
-        div.addEventListener('click', () => jumpToMatch(pos));
-        listBox.appendChild(div);
-      });
-
-      jumpToMatch(firstHeaderPos !== -1 ? firstHeaderPos : 0);
-    }
-
-    fab.addEventListener('click', () => {
-      const open = panel.classList.toggle('open');
-      if (open) setTimeout(() => input.focus(), 50);
-    });
-
-    panel.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-act]');
-      if (!btn) return;
-      const act = btn.dataset.act;
-      if (act === 'find') runSearch();
-      else if (act === 'prev') jumpToMatch(currentMatchPos - 1);
-      else if (act === 'next') jumpToMatch(currentMatchPos + 1);
-      else if (act === 'close') {
-        panel.classList.remove('open');
-        clearSearchHighlights();
-      }
-    });
-
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        runSearch();
-      }
-    });
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initSearchUI);
-  } else {
-    initSearchUI();
-  }
-})();
-</script>
-<!-- ===== /v9.8 애드온 끝 ===== -->
-<script src="./v99-save-patch.js"></script>
 <!-- ===== [안드로이드 APK 내장 음성 + 상단 여백 + 모바일 터치 듣기 통합 패치] ===== -->
 <style id="apkMobileFixOuterStyle">
   html.is-apk-app body {
@@ -2881,623 +2327,1120 @@
     #cloudBar.has-v99-badge #cloudStatusText { display: none !important; }
   }
 </style>
+<!-- ===== [모바일 상단여백 + 버튼정리 + 터치듣기 + APK 내장음성 연결 패치] ===== -->
+<style id="studioApkAllFixStyle">
+  html.is-studio-apk body {
+    padding-top: max(env(safe-area-inset-top, 0px), 36px) !important;
+    background: #060b16 !important;
+  }
+  html.is-studio-apk #btnRestoreCloudBar {
+    top: calc(max(env(safe-area-inset-top, 0px), 36px) + 6px) !important;
+  }
+  .docked-bar-pill {
+    position: static !important;
+    inset: auto !important;
+    transform: none !important;
+    margin: 0 !important;
+    padding: 3px 8px !important;
+    height: auto !important;
+    font-size: 0.72rem !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+  }
+  @media (max-width: 640px) {
+    #cloudBar #cloudStatusText { display: none !important; }
+  }
+</style>
 
 <script id="androidNativeTtsBridge">
 (function() {
-  if (window.__ANDROID_MOBILE_ALL_FIX_V2) return;
-  window.__ANDROID_MOBILE_ALL_FIX_V2 = true;
+  if (window.__STUDIO_APK_BRIDGE_V3) return;
+  window.__STUDIO_APK_BRIDGE_V3 = true;
 
   var isNativeApk = Boolean(window.AndroidTTS);
-  if (isNativeApk || /wv|Version\/\d+\.\d+.*Chrome/i.test(navigator.userAgent || '')) {
-    document.documentElement.classList.add('is-apk-app');
-  }
-  if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
-    navigator.serviceWorker.getRegistrations().then(function(regs) {
-      regs.forEach(function(r) { try { r.update(); } catch (e) {} });
-    }).catch(function() {});
-  }
-
-  // 1. 화면 한가운데 떠서 버튼을 가리는 미저장/통합저장/저장됨 배지를 상단 클라우드 바로 이동
-  function dockFloatingSaveBadge(targetDoc, isInner) {
-    if (!targetDoc || !targetDoc.body) return;
-    var cloudBar = document.getElementById('cloudBar');
-    var barCollapsed = cloudBar && cloudBar.classList.contains('collapsed');
-    var nodes = targetDoc.body.querySelectorAll('*');
-
-    for (var i = 0; i < nodes.length; i++) {
-      var el = nodes[i];
-      if (!el || el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'IFRAME') continue;
-      if (!isInner) {
-        if (el.id === 'cloudBar' || el.id === 'btnRestoreCloudBar' || el.id === 'appWrap') continue;
-        if (cloudBar && cloudBar.contains(el) && !el.hasAttribute('data-v99-badge')) continue;
-        if (el.closest && el.closest('#setupScreen, #uploadScreen, .gdoc-modal-backdrop')) continue;
-      } else {
-        if (el.closest && el.closest('#v93TtsPlayerDock, #highlightViewer, .gdoc-modal-backdrop')) continue;
-      }
-
-      var alreadyMarked = el.hasAttribute('data-v99-badge');
-      var cs = targetDoc.defaultView.getComputedStyle(el);
-      if (!alreadyMarked && cs.position !== 'fixed' && cs.position !== 'absolute') continue;
-
-      var rect = el.getBoundingClientRect();
-      if (!alreadyMarked && (rect.width < 28 || rect.width > 260 || rect.height < 16 || rect.height > 64)) continue;
-
-      var idCls = (el.id || '') + ' ' + (typeof el.className === 'string' ? el.className : '');
-      var txt = (el.textContent || '').trim();
-      var isSavePill = /v99/i.test(idCls) ||
-        (/(미저장|통합\s*저장|저장됨|변경됨)/.test(txt) && txt.length <= 26 && txt.indexOf('서버 저장 완료') === -1);
-      if (!isSavePill) continue;
-
-      var rootEl = el;
-      while (!alreadyMarked && rootEl.parentElement && rootEl.parentElement !== targetDoc.body) {
-        var pcs = targetDoc.defaultView.getComputedStyle(rootEl.parentElement);
-        if (pcs.position === 'fixed' || pcs.position === 'absolute') rootEl = rootEl.parentElement;
-        else break;
-      }
-      rootEl.setAttribute('data-v99-badge', '1');
-
-      if (!isInner && cloudBar) {
-        var leftSlot = cloudBar.querySelector('.cbar-left') || cloudBar;
-        cloudBar.classList.add('has-v99-badge');
-        if (barCollapsed) {
-          if (rootEl.parentElement !== document.body) document.body.appendChild(rootEl);
-          rootEl.classList.remove('v99-docked-in-bar');
-          rootEl.classList.add('v99-docked-collapsed');
-        } else {
-          if (rootEl.parentElement !== leftSlot) leftSlot.insertBefore(rootEl, leftSlot.firstChild);
-          rootEl.classList.remove('v99-docked-collapsed');
-          rootEl.classList.add('v99-docked-in-bar');
-        }
-      } else if (isInner) {
-        rootEl.style.setProperty('position', 'fixed', 'important');
-        rootEl.style.setProperty('top', 'auto', 'important');
-        rootEl.style.setProperty('left', 'auto', 'important');
-        rootEl.style.setProperty('right', '10px', 'important');
-        rootEl.style.setProperty('bottom', '56px', 'important');
-        rootEl.style.setProperty('transform', 'none', 'important');
-        rootEl.style.setProperty('z-index', '950', 'important');
-      }
-    }
-  }
+  if (isNativeApk) document.documentElement.classList.add('is-studio-apk');
 
   var activeStudioWin = null;
-  var BATCH_CHAR_LIMIT = 55000;
-  var RATE_STORAGE_KEY = 'magyo_android_native_tts_rate_v1';
+  var BATCH_LIMIT = 80000;
+  var RATE_KEY = 'magyo_android_native_tts_rate_v1';
 
-  window.onNativeTtsIndex = function(localIdx) {
-    if (activeStudioWin && typeof activeStudioWin.__handleNativeTtsIndex === 'function') {
-      activeStudioWin.__handleNativeTtsIndex(Number(localIdx) || 0);
+  // v9.8 회차 검색이 내부 뷰어(#highlightViewer)를 찾도록 연결
+  var origById = document.getElementById.bind(document);
+  document.getElementById = function(id) {
+    if (id === 'highlightViewer' && activeStudioWin && activeStudioWin.document) {
+      return activeStudioWin.document.getElementById('highlightViewer');
     }
-  };
-  window.onNativeTtsDone = function() {
-    if (activeStudioWin && typeof activeStudioWin.__handleNativeTtsDone === 'function') {
-      activeStudioWin.__handleNativeTtsDone();
-    }
+    return origById(id);
   };
 
-  function cleanSpeech(str) {
-    return String(str || '')
-      .replace(/^[#*\-\s]+/, '')
-      .replace(/\*\*([^*]+)\*\*/g, '$1')
-      .replace(/[“”"‘’']/g, ' ')
-      .replace(/(?:…+|\.{2,}|⋯+|―+)/g, ', ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  function splitSentences(rawLine, isHeader) {
-    var t = String(rawLine || '').trim();
-    if (!t || t === '* * *' || /^[-=*_─━]{3,}$/.test(t)) return [];
-    if (isHeader) {
-      var h = cleanSpeech(t);
-      return h ? [{ raw: t, sp: h.slice(0, 300) }] : [];
-    }
-    var primary = [], s = 0, len = t.length;
-    for (var i = 0; i < len; i++) {
-      var ch = t.charAt(i);
-      if (ch === '.' || ch === '!' || ch === '?') {
-        var e = i + 1;
-        while (e < len && /[.!?…⋯”"’')\]]/.test(t.charAt(e))) e++;
-        if (e === len || /\s/.test(t.charAt(e)) || /[“"‘']/.test(t.charAt(e))) {
-          primary.push(t.slice(s, e).trim());
-          i = e - 1;
-          s = e;
+  // 화면 가운데를 가리는 저장됨/미저장 배지 및 검색 버튼을 상단 클라우드 바로 이동
+  function dockFloatingPills() {
+    var barLeft = document.querySelector('#cloudBar .cbar-left');
+    if (barLeft) {
+      var fab = document.querySelector('.v98-search-fab');
+      if (fab && fab.parentElement !== barLeft) {
+        fab.textContent = '🔍 검색';
+        fab.classList.add('docked-bar-pill');
+        barLeft.appendChild(fab);
+      }
+      var outerNodes = document.body.querySelectorAll('button, div, span');
+      for (var i = 0; i < outerNodes.length; i++) {
+        var el = outerNodes[i];
+        if (el.closest('#cloudBar, #setupScreen, #uploadScreen, .v98-search-panel, .gdoc-modal-backdrop')) continue;
+        if (el.id === 'btnRestoreCloudBar' || el.id === 'appWrap') continue;
+        var cs = window.getComputedStyle(el);
+        if (cs.position !== 'fixed' && !el.hasAttribute('data-v99-docked')) continue;
+        var txt = (el.textContent || '').trim();
+        if (/(미저장|통합\s*저장|저장됨)/.test(txt) && txt.length <= 24) {
+          el.setAttribute('data-v99-docked', '1');
+          el.classList.add('docked-bar-pill');
+          barLeft.appendChild(el);
         }
       }
     }
-    if (s < len && t.slice(s).trim()) primary.push(t.slice(s).trim());
-
-    var out = [];
-    for (var p = 0; p < primary.length; p++) {
-      var clean = cleanSpeech(primary[p]);
-      if (!clean) continue;
-      if (clean.length <= 280) {
-        out.push({ raw: primary[p], sp: clean });
-      } else {
-        var pos = 0;
-        while (pos < clean.length) {
-          var slice = clean.slice(pos, pos + 240);
-          if (pos + 240 < clean.length) {
-            var cut = slice.lastIndexOf(', ');
-            if (cut < 80) cut = slice.lastIndexOf(' ');
-            if (cut > 60) slice = clean.slice(pos, pos + cut + 1);
+    if (activeStudioWin && activeStudioWin.document && activeStudioWin.document.body) {
+      var iDoc = activeStudioWin.document;
+      var innerNodes = iDoc.body.querySelectorAll('button, div, span');
+      for (var j = 0; j < innerNodes.length; j++) {
+        var iEl = innerNodes[j];
+        if (iEl.closest('#highlightViewer, #v93TtsPlayerDock, .gdoc-modal-backdrop')) continue;
+        var ics = activeStudioWin.getComputedStyle(iEl);
+        if (ics.position !== 'fixed') continue;
+        var itxt = (iEl.textContent || '').trim();
+        if (/(미저장|통합\s*저장|저장됨)/.test(itxt) && itxt.length <= 24) {
+          if (!iEl.getAttribute('onclick') && barLeft) {
+            iEl.classList.add('docked-bar-pill');
+            barLeft.appendChild(iEl);
+          } else {
+            iEl.style.setProperty('top', 'auto', 'important');
+            iEl.style.setProperty('left', 'auto', 'important');
+            iEl.style.setProperty('right', '10px', 'important');
+            iEl.style.setProperty('bottom', '56px', 'important');
+            iEl.style.setProperty('transform', 'none', 'important');
           }
-          if (slice.trim()) out.push({ raw: slice.trim(), sp: slice.trim() });
-          pos += slice.length;
+        }
+      }
+    }
+  }
+
+  function cleanSp(str) {
+    return String(str || '').replace(/^[#*\-\s]+/, '').replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/[“”"‘’']/g, ' ').replace(/(?:…+|\.{2,}|⋯+|―+)/g, ', ').replace(/\s+/g, ' ').trim();
+  }
+
+  function splitLine(rawLine, isHdr) {
+    var t = String(rawLine || '').trim();
+    if (!t || t === '* * *' || /^[-=*_─━]{3,}$/.test(t)) return [];
+    if (isHdr) { var h = cleanSp(t); return h ? [{ raw: t, sp: h.slice(0, 280) }] : []; }
+    var parts = t.match(/[^.!?]+(?:[.!?]+[”"’')\]]*|\s*$)/g) || [t];
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var sp = cleanSp(parts[i]);
+      if (!sp) continue;
+      if (sp.length <= 260) out.push({ raw: parts[i].trim(), sp: sp });
+      else {
+        for (var p = 0; p < sp.length; p += 220) {
+          var sub = sp.slice(p, p + 220).trim();
+          if (sub) out.push({ raw: sub, sp: sub });
         }
       }
     }
     return out;
   }
 
-  // 2. 스튜디오 내부 뷰어(#studioFrame)에 모바일 🔊 버튼 + 문장 꾹 누르기 + 스킵 홀드 주입
-  function installMobileTouchControls(sw) {
-    if (!sw || !sw.document || sw.__mobileTouchInstalled) return;
-    sw.__mobileTouchInstalled = true;
+  // 모바일 뷰어에 🔊 버튼 상시 표시 + 문장 꾹 누르기 재생 + 스킵 버튼 홀드 주입
+  function injectMobileControls(sw) {
+    if (!sw || !sw.document || sw.__mobCtrlReady) return;
+    sw.__mobCtrlReady = true;
     var doc = sw.document;
 
-    var stTag = doc.createElement('style');
-    stTag.id = 'mobileTtsTouchStyles';
-    stTag.textContent = [
-      '@media (hover: none), (pointer: coarse) {',
-      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) {',
-      '    position: relative !important; padding-right: 36px !important;',
-      '  }',
-      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) .p-actions {',
-      '    display: flex !important; opacity: 1 !important; visibility: visible !important;',
-      '    position: absolute !important; top: 4px !important; right: 2px !important;',
-      '    margin: 0 !important; padding: 0 !important; background: transparent !important;',
-      '  }',
-      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) .p-actions > :not(.btn-tts-line) {',
-      '    display: none !important;',
-      '  }',
-      '  #highlightViewer .p-row.has-issue .p-actions, #highlightViewer .p-row.has-meta .p-actions {',
-      '    display: flex !important; opacity: 1 !important; visibility: visible !important;',
-      '  }',
-      '  #highlightViewer .p-row .btn-tts-line {',
-      '    display: inline-flex !important; opacity: 0.82 !important; visibility: visible !important;',
-      '    align-items: center !important; justify-content: center !important;',
-      '    width: 28px !important; height: 28px !important; padding: 0 !important;',
-      '    border-radius: 999px !important; font-size: 13px !important;',
-      '    background: rgba(30, 41, 59, 0.78) !important;',
-      '    border: 1px solid rgba(148, 163, 184, 0.3) !important;',
-      '    pointer-events: auto !important;',
-      '  }',
-      '}',
-      '#v93TtsPlayerDock button { user-select: none !important; -webkit-touch-callout: none !important; }',
-      '.mobile-lp-flash { outline: 2px solid #38bdf8 !important; background: rgba(56, 189, 248, 0.22) !important; border-radius: 8px; }'
-    ].join('\n');
-    (doc.head || doc.documentElement).appendChild(stTag);
+    var st = doc.createElement('style');
+    st.textContent =
+      '.v98-search-hit { outline: 2px solid #f59e0b !important; background: rgba(245,158,11,0.18) !important; border-radius: 6px; }' +
+      '.mob-lp-flash { outline: 2px solid #38bdf8 !important; background: rgba(56,189,248,0.22) !important; border-radius: 6px; }' +
+      '@media (hover: none), (pointer: coarse) {' +
+      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) { position: relative !important; padding-right: 34px !important; }' +
+      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) .p-actions { display: flex !important; opacity: 1 !important; visibility: visible !important; position: absolute !important; top: 4px !important; right: 2px !important; background: transparent !important; }' +
+      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) .p-actions > :not(.btn-tts-line) { display: none !important; }' +
+      '  #highlightViewer .p-row .btn-tts-line { display: inline-flex !important; opacity: 0.85 !important; visibility: visible !important; width: 27px !important; height: 27px !important; padding: 0 !important; align-items: center !important; justify-content: center !important; border-radius: 999px !important; background: rgba(30,41,59,0.8) !important; border: 1px solid rgba(148,163,184,0.3) !important; }' +
+      '}';
+    (doc.head || doc.documentElement).appendChild(st);
 
-    function ensureRowTtsButtons() {
-      var rows = doc.querySelectorAll('#highlightViewer .p-row[data-line]');
-      for (var i = 0; i < rows.length; i++) {
-        var r = rows[i];
-        if (r.querySelector('.btn-tts-line')) continue;
-        var act = r.querySelector('.p-actions');
-        if (!act) {
-          act = doc.createElement('div');
-          act.className = 'p-actions';
-          r.appendChild(act);
-        }
-        var ln = r.getAttribute('data-line');
-        var b = doc.createElement('button');
-        b.type = 'button';
-        b.className = 'btn-tts-line';
-        b.textContent = '🔊';
-        b.setAttribute('onclick', 'event.stopPropagation(); window.v93TtsPlay(' + ln + ', 0);');
-        act.insertBefore(b, act.firstChild);
-      }
-    }
-    ensureRowTtsButtons();
-    var hv = doc.getElementById('highlightViewer');
-    if (hv && typeof MutationObserver !== 'undefined') {
-      new MutationObserver(ensureRowTtsButtons).observe(hv, { childList: true });
-    }
-
-    var suppressClickUntil = 0;
+    var blockClickUntil = 0;
     doc.addEventListener('click', function(e) {
-      if (Date.now() < suppressClickUntil) {
-        e.stopImmediatePropagation();
-        e.preventDefault();
-        suppressClickUntil = 0;
-      }
+      if (Date.now() < blockClickUntil) { e.stopImmediatePropagation(); e.preventDefault(); blockClickUntil = 0; }
     }, true);
 
-    // 앞·뒤 스킵 버튼 꾹 누르기 연속 고속 이동
-    var holdTimer = null, repTimer = null, ticks = 0;
-    function clearHold() {
-      clearTimeout(holdTimer);
-      clearInterval(repTimer);
-      holdTimer = null;
-      repTimer = null;
-      ticks = 0;
-    }
-    function findSkipBtn(target) {
-      if (!target || !target.closest) return null;
-      var btn = target.closest('button, [role="button"], [onclick]');
-      if (!btn) return null;
-      var oc = btn.getAttribute('onclick') || '';
-      var m = oc.match(/v93TtsStepParagraph\s*\(\s*(-?\d+)\s*\)/);
-      if (m) return { mode: 'para', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
-      m = oc.match(/v93TtsStepSentence\s*\(\s*(-?\d+)\s*\)/);
-      if (m) return { mode: 'sent', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
-      var meta = [btn.id || '', btn.title || '', (btn.textContent || '').trim()].join(' ');
-      if (/이전\s*문단|⏮|⏪|◀◀/.test(meta)) return { mode: 'para', dir: -1 };
-      if (/다음\s*문단|⏭|⏩|▶▶/.test(meta)) return { mode: 'para', dir: 1 };
-      if (/이전\s*문장/.test(meta)) return { mode: 'sent', dir: -1 };
-      if (/다음\s*문장/.test(meta)) return { mode: 'sent', dir: 1 };
-      return null;
-    }
-    function stepFast(act, mult) {
-      var d = act.dir * mult;
-      if (act.mode === 'sent' && typeof sw.v93TtsStepSentence === 'function') sw.v93TtsStepSentence(d);
-      else if (typeof sw.v93TtsStepParagraph === 'function') sw.v93TtsStepParagraph(d);
-      if (typeof sw.showToast === 'function') {
-        sw.showToast((d < 0 ? '⏪ ' : '⏩ +') + d + (act.mode === 'sent' ? '문장' : '문단') + ' 고속 스킵');
-      }
-    }
-
-    // 본문 문장 0.4초 꾹 눌러 해당 문장부터 즉시 재생
-    var lpTimer = null, sx = 0, sy = 0;
-    function cancelLp() { clearTimeout(lpTimer); lpTimer = null; }
-
-    function getSentIdxAtPoint(row, x, y) {
-      var box = row.querySelector('.p-text') || row;
-      if (doc.caretRangeFromPoint) {
-        try {
-          var range = doc.caretRangeFromPoint(x, y);
-          if (range && box.contains(range.startContainer)) {
-            var pre = doc.createRange();
-            pre.selectNodeContents(box);
-            pre.setEnd(range.startContainer, range.startOffset);
-            var m = pre.toString().match(/[.!?…。！？]["'”’)\]]*\s+/g);
-            return m ? m.length : 0;
-          }
-        } catch (err) {}
-      }
-      return 0;
-    }
+    var hTimer = null, rTimer = null, ticks = 0, lpTimer = null, sx = 0, sy = 0;
+    function stopTimers() { clearTimeout(hTimer); clearInterval(rTimer); clearTimeout(lpTimer); hTimer = rTimer = lpTimer = null; ticks = 0; }
 
     doc.addEventListener('pointerdown', function(e) {
       if (e.button && e.button !== 0) return;
-      var skipAct = findSkipBtn(e.target);
-      if (skipAct) {
-        clearHold();
-        holdTimer = setTimeout(function() {
-          suppressClickUntil = Date.now() + 1500;
-          if (navigator.vibrate) navigator.vibrate(15);
-          stepFast(skipAct, 1);
-          repTimer = setInterval(function() {
-            ticks++;
-            suppressClickUntil = Date.now() + 1000;
-            stepFast(skipAct, ticks > 14 ? 5 : (ticks > 5 ? 3 : 1));
-          }, 140);
-        }, 320);
+      var btn = e.target.closest && e.target.closest('button, [onclick]');
+      if (btn) {
+        var oc = (btn.getAttribute('onclick') || '') + ' ' + (btn.title || '') + ' ' + (btn.textContent || '');
+        var isPrev = /Step(Paragraph|Sentence)\s*\(\s*-|이전|⏮|⏪|◀◀/.test(oc);
+        var isNext = /Step(Paragraph|Sentence)\s*\(\s*[1-9]|다음|⏭|⏩|▶▶/.test(oc);
+        if (isPrev || isNext) {
+          var dir = isPrev ? -1 : 1, isSent = /Sentence|문장/.test(oc);
+          stopTimers();
+          hTimer = setTimeout(function() {
+            blockClickUntil = Date.now() + 1200;
+            var stepFn = function(m) {
+              if (isSent && sw.v93TtsStepSentence) sw.v93TtsStepSentence(dir * m);
+              else if (sw.v93TtsStepParagraph) sw.v93TtsStepParagraph(dir * m);
+              if (sw.showToast) sw.showToast((dir < 0 ? '⏪ ' : '⏩ +') + (dir * m) + (isSent ? '문장' : '문단'));
+            };
+            stepFn(1);
+            rTimer = setInterval(function() { ticks++; blockClickUntil = Date.now() + 1000; stepFn(ticks > 12 ? 5 : (ticks > 4 ? 3 : 1)); }, 145);
+          }, 320);
+        }
         return;
       }
-
-      if (!e.target || !e.target.closest) return;
-      if (e.target.closest('button, a, input, textarea, select')) return;
-      var row = e.target.closest('#highlightViewer .p-row[data-line]');
+      if (e.target.closest && e.target.closest('a, input, textarea, select')) return;
+      var row = e.target.closest && e.target.closest('#highlightViewer .p-row[data-line]');
       if (!row) return;
-
-      cancelLp();
-      sx = e.clientX;
-      sy = e.clientY;
+      stopTimers(); sx = e.clientX; sy = e.clientY;
       lpTimer = setTimeout(function() {
-        lpTimer = null;
-        suppressClickUntil = Date.now() + 900;
-        var lineIdx = parseInt(row.getAttribute('data-line'), 10);
-        if (isNaN(lineIdx)) return;
-        var sentIdx = getSentIdxAtPoint(row, sx, sy);
-
-        row.classList.add('mobile-lp-flash');
-        setTimeout(function() { row.classList.remove('mobile-lp-flash'); }, 700);
-        try { if (sw.getSelection) sw.getSelection().removeAllRanges(); } catch (err) {}
-        if (navigator.vibrate) navigator.vibrate(25);
-
-        if (typeof sw.v93TtsPlay === 'function') {
-          sw.v93TtsPlay(lineIdx, sentIdx);
-          if (typeof sw.showToast === 'function') {
-            sw.showToast('🔊 ' + (lineIdx + 1) + '번 문단' + (sentIdx > 0 ? ' (' + (sentIdx + 1) + '번째 문장)' : '') + '부터 재생');
-          }
+        lpTimer = null; blockClickUntil = Date.now() + 900;
+        var lIdx = parseInt(row.getAttribute('data-line'), 10);
+        if (isNaN(lIdx)) return;
+        var sIdx = 0, box = row.querySelector('.p-text') || row;
+        if (doc.caretRangeFromPoint) {
+          try {
+            var rg = doc.caretRangeFromPoint(sx, sy);
+            if (rg && box.contains(rg.startContainer)) {
+              var pre = doc.createRange(); pre.selectNodeContents(box); pre.setEnd(rg.startContainer, rg.startOffset);
+              var m = pre.toString().match(/[.!?][”"’')\]]*\s+/g); sIdx = m ? m.length : 0;
+            }
+          } catch (err) {}
         }
+        row.classList.add('mob-lp-flash');
+        setTimeout(function() { row.classList.remove('mob-lp-flash'); }, 700);
+        if (navigator.vibrate) navigator.vibrate(25);
+        if (sw.v93TtsPlay) sw.v93TtsPlay(lIdx, sIdx);
+        if (sw.showToast) sw.showToast('🔊 ' + (lIdx + 1) + '번 문단부터 재생');
       }, 420);
     }, true);
 
-    doc.addEventListener('pointermove', function(e) {
-      if (lpTimer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancelLp();
-    }, true);
-
-    ['pointerup', 'pointercancel'].forEach(function(ev) {
-      sw.addEventListener(ev, function() { clearHold(); cancelLp(); }, true);
-    });
-    sw.addEventListener('scroll', cancelLp, true);
-
-    doc.addEventListener('contextmenu', function(e) {
-      if (Date.now() < suppressClickUntil || holdTimer || repTimer) {
-        e.preventDefault();
-      }
-    }, true);
+    doc.addEventListener('pointermove', function(e) { if (lpTimer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) { clearTimeout(lpTimer); lpTimer = null; } }, true);
+    ['pointerup', 'pointercancel', 'scroll'].forEach(function(ev) { sw.addEventListener(ev, stopTimers, true); });
+    doc.addEventListener('contextmenu', function(e) { if (Date.now() < blockClickUntil) e.preventDefault(); }, true);
   }
 
-  // 3. 안드로이드 APK 네이티브 내장 음성(AndroidTTS) 연동
-  function installNativeTtsEngine(sw) {
+  // APK 안드로이드 내장 음성(AndroidTTS) 연동
+  function injectNativeTts(sw) {
     if (!isNativeApk || !sw || !sw.document) return;
-    activeStudioWin = sw;
+    var rateVal = parseFloat(localStorage.getItem(RATE_KEY) || '1.0') || 1.0;
+    var st = sw.__nTts || { playing: false, paused: false, rate: rateVal, sig: '', items: [], cur: 0, off: 0, len: 0, t0: 0, tmr: null };
+    sw.__nTts = st;
 
-    var savedRate = 1.0;
-    try {
-      var r = parseFloat(localStorage.getItem(RATE_STORAGE_KEY) || '1.0');
-      if (!isNaN(r) && r >= 0.6 && r <= 2.5) savedRate = r;
-    } catch (e) {}
-
-    var st = sw.__nativeTtsState || {
-      playing: false, paused: false, rate: savedRate,
-      tabName: '', textLen: -1, totalLines: 0, items: [],
-      curIdx: 0, batchOffset: 0, batchLen: 0, startedAt: 0, skipTimer: null
-    };
-    sw.__nativeTtsState = st;
-
-    function stopWebAudio() {
-      try { if (sw.speechSynthesis) sw.speechSynthesis.cancel(); } catch (e) {}
-      try {
-        var aus = sw.document.querySelectorAll('audio');
-        for (var i = 0; i < aus.length; i++) { try { aus[i].pause(); } catch (e2) {} }
-      } catch (e) {}
-    }
-
-    function getTab() {
-      if (typeof sw.getActiveTab === 'function') return sw.getActiveTab();
-      if (Array.isArray(sw.fileTabs) && typeof sw.activeTabIdx === 'number') return sw.fileTabs[sw.activeTabIdx] || null;
-      return null;
-    }
-
-    function ensureItems(tab) {
-      if (!tab || !tab.text || !tab.text.trim()) { st.items = []; return false; }
-      if (st.tabName === tab.name && st.textLen === tab.text.length && st.items.length > 0) return true;
+    function build(tab) {
+      if (!tab || !tab.text || !tab.text.trim()) return false;
+      var sig = tab.name + ':' + tab.text.length;
+      if (st.sig === sig && st.items.length) return true;
       var lines = tab.text.split('\n');
-      var eps = (tab.episodes && tab.episodes.length)
-        ? tab.episodes
-        : [{ title: tab.name || '원고 낭독', startLine: 0, hasExplicitHeader: false, lines: lines }];
-      var list = [];
-      for (var eIdx = 0; eIdx < eps.length; eIdx++) {
-        var ep = eps[eIdx], epLines = ep.lines || [];
-        for (var lIdx = 0; lIdx < epLines.length; lIdx++) {
-          var rawLine = epLines[lIdx], gLine = (ep.startLine || 0) + lIdx;
-          var sents = splitSentences(rawLine, Boolean(lIdx === 0 && ep.hasExplicitHeader));
-          for (var sIdx = 0; sIdx < sents.length; sIdx++) {
-            list.push({
-              epIdx: eIdx, epTitle: ep.title || '원고 낭독', lineIdx: gLine, sentIdx: sIdx,
-              rawLine: String(rawLine || '').trim(), rawSent: sents[sIdx].raw, sp: sents[sIdx].sp
-            });
-          }
+      var eps = (tab.episodes && tab.episodes.length) ? tab.episodes : [{ title: tab.name, startLine: 0, lines: lines }];
+      var arr = [];
+      for (var e = 0; e < eps.length; e++) {
+        var ep = eps[e];
+        for (var l = 0; l < ep.lines.length; l++) {
+          var gl = (ep.startLine || 0) + l, ss = splitLine(ep.lines[l], Boolean(l === 0 && ep.hasExplicitHeader));
+          for (var s = 0; s < ss.length; s++) arr.push({ epIdx: e, epTitle: ep.title || '원고', lineIdx: gl, sentIdx: s, raw: ss[s].raw, sp: ss[s].sp });
         }
       }
-      st.tabName = tab.name; st.textLen = tab.text.length; st.totalLines = lines.length; st.items = list;
-      if (st.curIdx >= list.length) st.curIdx = 0;
-      return list.length > 0;
+      st.sig = sig; st.totalLines = lines.length; st.items = arr;
+      return arr.length > 0;
     }
 
-    function saveBm(item) {
-      var tab = getTab();
-      if (!item || !tab) return;
+    function sync(scroll) {
+      var doc = sw.document, on = st.playing && !st.paused, it = st.items[st.cur];
+      var mb = doc.getElementById('v93BtnPlayMain'), sb = doc.getElementById('v93SpeedBadge');
+      if (mb) { mb.classList.toggle('is-playing', on); mb.textContent = on ? '⏸ 일시정지' : '▶ 듣기'; }
+      if (sb) sb.textContent = st.rate.toFixed(1) + 'x';
+      if (!it) return;
       try {
-        var bms = JSON.parse(localStorage.getItem('magyo_studio_tts_autobm_v93') || '{}') || {};
-        var pct = st.totalLines > 0 ? Math.round(((item.lineIdx + 1) / st.totalLines) * 100) : 0;
-        var norm = (typeof sw.normalizeSig === 'function') ? sw.normalizeSig(item.rawLine).slice(0, 45) : item.rawLine.slice(0, 45);
-        var rec = {
-          fileName: tab.name, epIdx: item.epIdx, epTitle: item.epTitle,
-          lineIdx: item.lineIdx, sentIdx: item.sentIdx,
-          snippet: item.rawLine.slice(0, 70), normSig: norm, pct: pct, updatedAt: Date.now()
-        };
-        bms[tab.name] = rec; bms.__LAST__ = rec;
-        localStorage.setItem('magyo_studio_tts_autobm_v93', JSON.stringify(bms));
+        var tab = sw.getActiveTab ? sw.getActiveTab() : null;
+        if (tab) {
+          var bms = JSON.parse(localStorage.getItem('magyo_studio_tts_autobm_v93') || '{}') || {};
+          var rec = { fileName: tab.name, epIdx: it.epIdx, epTitle: it.epTitle, lineIdx: it.lineIdx, sentIdx: it.sentIdx, snippet: it.raw.slice(0, 65), pct: Math.round(((it.lineIdx + 1) / (st.totalLines || 1)) * 100) };
+          bms[tab.name] = rec; bms.__LAST__ = rec;
+          localStorage.setItem('magyo_studio_tts_autobm_v93', JSON.stringify(bms));
+        }
       } catch (e) {}
-    }
-
-    function syncUI(scrollViewer) {
-      var doc = sw.document, isOn = st.playing && !st.paused;
-      var mBtn = doc.getElementById('v93BtnPlayMain');
-      if (mBtn) { mBtn.classList.toggle('is-playing', isOn); mBtn.textContent = isOn ? '⏸ 일시정지' : '▶ 듣기'; }
-      var sBadge = doc.getElementById('v93SpeedBadge');
-      if (sBadge) sBadge.textContent = st.rate.toFixed(1) + 'x';
-      var item = st.items[st.curIdx];
-      if (!item || doc.hidden) return;
-
+      if (doc.hidden) return;
       var epEl = doc.getElementById('v93StatusEp'), pvEl = doc.getElementById('v93StatusPreview');
-      if (epEl) {
-        var safeTitle = String(item.epTitle + ' · ' + (item.lineIdx + 1) + '줄').replace(/&/g, '&amp;').replace(/</g, '&lt;');
-        epEl.innerHTML = '<span style="color:#4ade80;font-weight:800;">📱 내장 음성</span> · ' + safeTitle;
-      }
-      if (pvEl) pvEl.textContent = item.rawSent || item.rawLine;
-
-      var old = doc.querySelectorAll('#highlightViewer .v93-tts-row-active');
-      for (var i = 0; i < old.length; i++) old[i].classList.remove('v93-tts-row-active');
-      var row = doc.querySelector('#highlightViewer .p-row[data-line="' + item.lineIdx + '"]');
-      if (row) {
-        row.classList.add('v93-tts-row-active');
-        if (scrollViewer !== false) { try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {} }
-      }
+      if (epEl) epEl.textContent = '📱 내장 음성 · ' + it.epTitle + ' · ' + (it.lineIdx + 1) + '줄';
+      if (pvEl) pvEl.textContent = it.raw;
+      doc.querySelectorAll('#highlightViewer .v93-tts-row-active').forEach(function(r) { r.classList.remove('v93-tts-row-active'); });
+      var row = doc.querySelector('#highlightViewer .p-row[data-line="' + it.lineIdx + '"]');
+      if (row) { row.classList.add('v93-tts-row-active'); if (scroll !== false) row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     }
 
-    function speakFrom(globalIdx) {
+    function speakAt(idx) {
       if (!st.items.length) return;
-      var idx = Math.max(0, Math.min(st.items.length - 1, globalIdx));
-      st.curIdx = idx; st.playing = true; st.paused = false;
-      var chunk = [], sum = 0;
-      for (var i = idx; i < st.items.length; i++) {
-        var sp = st.items[i].sp;
-        if (chunk.length > 0 && (sum + sp.length) > BATCH_CHAR_LIMIT) break;
-        chunk.push(sp);
-        sum += sp.length + 2;
+      st.cur = Math.max(0, Math.min(st.items.length - 1, idx));
+      st.playing = true; st.paused = false;
+      var chunk = [], chars = 0;
+      for (var i = st.cur; i < st.items.length; i++) {
+        if (chunk.length && chars + st.items[i].sp.length > BATCH_LIMIT) break;
+        chunk.push(st.items[i].sp); chars += st.items[i].sp.length + 2;
       }
-      st.batchOffset = idx; st.batchLen = chunk.length; st.startedAt = Date.now();
-      stopWebAudio();
-      saveBm(st.items[idx]);
-      syncUI(true);
-      try { window.AndroidTTS.speakList(JSON.stringify(chunk), 0, Number(st.rate) || 1.0); } catch (e) {}
+      st.off = st.cur; st.len = chunk.length; st.t0 = Date.now();
+      try { if (sw.speechSynthesis) sw.speechSynthesis.cancel(); } catch (e) {}
+      sw.document.querySelectorAll('audio').forEach(function(a) { try { a.pause(); } catch (e) {} });
+      sync(true);
+      window.AndroidTTS.speakList(JSON.stringify(chunk), 0, st.rate);
     }
 
-    sw.__handleNativeTtsIndex = function(localIdx) {
-      if (!st.playing || st.paused) return;
-      var gIdx = st.batchOffset + localIdx;
-      if (gIdx >= 0 && gIdx < st.items.length) {
-        st.curIdx = gIdx; saveBm(st.items[gIdx]); syncUI(true);
-      }
-    };
-    sw.__handleNativeTtsDone = function() {
-      if (!st.playing || st.paused) return;
-      if (Date.now() - st.startedAt < 400 && st.batchLen > 1) return;
-      var next = st.batchOffset + st.batchLen;
-      if (next < st.items.length) speakFrom(next);
-      else sw.v93TtsStop(true);
-    };
+    window.onNativeTtsIndex = function(loc) { if (st.playing && !st.paused && st.items[st.off + loc]) { st.cur = st.off + loc; sync(true); } };
+    window.onNativeTtsDone = function() { if (st.playing && !st.paused && Date.now() - st.t0 > 400) { if (st.off + st.len < st.items.length) speakAt(st.off + st.len); else sw.v93TtsStop(); } };
 
-    sw.v93TtsPlay = function(startLine, startSent) {
-      var tab = getTab();
-      if (!ensureItems(tab)) { if (sw.showToast) sw.showToast('먼저 원고를 불러와 주세요.'); return; }
-      var dock = sw.document.getElementById('v93TtsPlayerDock');
-      if (dock) dock.classList.add('open');
-      if (typeof startLine !== 'number' && st.paused && st.items.length > 0) { speakFrom(st.curIdx); return; }
-
-      var tLine = typeof startLine === 'number' ? startLine : -1;
-      var tSent = typeof startSent === 'number' ? startSent : 0;
-      if (tLine < 0) {
-        try {
-          var bms = JSON.parse(localStorage.getItem('magyo_studio_tts_autobm_v93') || '{}');
-          if (bms && bms[tab.name] && typeof bms[tab.name].lineIdx === 'number') {
-            tLine = bms[tab.name].lineIdx; tSent = bms[tab.name].sentIdx || 0;
-          }
-        } catch (e) {}
-      }
-      var fIdx = 0;
-      if (tLine >= 0) {
-        var hit = false;
-        for (var i = 0; i < st.items.length; i++) {
-          var it = st.items[i];
-          if (it.lineIdx > tLine || (it.lineIdx === tLine && it.sentIdx >= tSent)) { fIdx = i; hit = true; break; }
-        }
-        if (!hit && st.items.length > 0) fIdx = st.items.length - 1;
-      }
-      speakFrom(fIdx);
+    sw.v93TtsPlay = function(sLine, sSent) {
+      var tab = sw.getActiveTab ? sw.getActiveTab() : null;
+      if (!build(tab)) return;
+      var dk = sw.document.getElementById('v93TtsPlayerDock'); if (dk) dk.classList.add('open');
+      if (typeof sLine !== 'number' && st.paused) { speakAt(st.cur); return; }
+      var tl = typeof sLine === 'number' ? sLine : -1, ts = sSent || 0;
+      if (tl < 0) { try { var b = JSON.parse(localStorage.getItem('magyo_studio_tts_autobm_v93') || '{}')[tab.name]; if (b) { tl = b.lineIdx; ts = b.sentIdx || 0; } } catch (e) {} }
+      var idx = 0;
+      if (tl >= 0) { for (var i = 0; i < st.items.length; i++) { if (st.items[i].lineIdx > tl || (st.items[i].lineIdx === tl && st.items[i].sentIdx >= ts)) { idx = i; break; } } }
+      speakAt(idx);
     };
-
-    sw.v93TtsPause = function() {
-      clearTimeout(st.skipTimer);
-      st.playing = false; st.paused = true;
-      try { window.AndroidTTS.stop(); } catch (e) {}
-      stopWebAudio();
-      saveBm(st.items[st.curIdx]); syncUI(false);
-      if (typeof window.saveToCloudSilent === 'function') { try { window.saveToCloudSilent(); } catch (e) {} }
-    };
+    sw.v93TtsPause = function() { clearTimeout(st.tmr); st.playing = false; st.paused = true; window.AndroidTTS.stop(); sync(false); if (window.saveToCloudSilent) window.saveToCloudSilent(); };
     sw.v93TtsTogglePlayPause = function() { if (st.playing && !st.paused) sw.v93TtsPause(); else sw.v93TtsPlay(); };
-    sw.v93TtsStop = function() {
-      clearTimeout(st.skipTimer);
-      st.playing = false; st.paused = false;
-      try { window.AndroidTTS.stop(); } catch (e) {}
-      stopWebAudio();
-      var rows = sw.document.querySelectorAll('#highlightViewer .v93-tts-row-active');
-      for (var i = 0; i < rows.length; i++) rows[i].classList.remove('v93-tts-row-active');
-      syncUI(false);
-    };
-    sw.v93TtsStepSentence = function(delta) {
-      if (!ensureItems(getTab())) return;
-      try { window.AndroidTTS.stop(); } catch (e) {}
-      st.curIdx = Math.max(0, Math.min(st.items.length - 1, st.curIdx + (Number(delta) || 1)));
-      saveBm(st.items[st.curIdx]); syncUI(true);
-      clearTimeout(st.skipTimer);
-      st.skipTimer = setTimeout(function() { speakFrom(st.curIdx); }, 220);
-    };
-    sw.v93TtsStepParagraph = function(delta) {
-      if (!ensureItems(getTab())) return;
-      try { window.AndroidTTS.stop(); } catch (e) {}
-      var step = Number(delta) || 1, dir = step >= 0 ? 1 : -1, moves = Math.abs(step), idx = st.curIdx;
-      for (var m = 0; m < moves; m++) {
-        var curL = st.items[idx].lineIdx;
-        while (idx + dir >= 0 && idx + dir < st.items.length && st.items[idx + dir].lineIdx === curL) idx += dir;
+    sw.v93TtsStop = function() { clearTimeout(st.tmr); st.playing = false; st.paused = false; window.AndroidTTS.stop(); sync(false); };
+    sw.v93TtsStepSentence = function(d) { if (!build(sw.getActiveTab && sw.getActiveTab())) return; window.AndroidTTS.stop(); st.cur = Math.max(0, Math.min(st.items.length - 1, st.cur + (Number(d) || 1))); sync(true); clearTimeout(st.tmr); st.tmr = setTimeout(function() { speakAt(st.cur); }, 200); };
+    sw.v93TtsStepParagraph = function(d) {
+      if (!build(sw.getActiveTab && sw.getActiveTab())) return; window.AndroidTTS.stop();
+      var step = Number(d) || 1, dir = step >= 0 ? 1 : -1, mv = Math.abs(step), idx = st.cur;
+      for (var m = 0; m < mv; m++) {
+        var cl = st.items[idx].lineIdx;
+        while (idx + dir >= 0 && idx + dir < st.items.length && st.items[idx + dir].lineIdx === cl) idx += dir;
         if (idx + dir >= 0 && idx + dir < st.items.length) idx += dir;
-        if (dir < 0) {
-          var tL = st.items[idx].lineIdx;
-          while (idx - 1 >= 0 && st.items[idx - 1].lineIdx === tL) idx--;
-        }
+        if (dir < 0) { var tl = st.items[idx].lineIdx; while (idx > 0 && st.items[idx - 1].lineIdx === tl) idx--; }
       }
-      st.curIdx = idx; saveBm(st.items[idx]); syncUI(true);
-      clearTimeout(st.skipTimer);
-      st.skipTimer = setTimeout(function() { speakFrom(st.curIdx); }, 220);
+      st.cur = idx; sync(true); clearTimeout(st.tmr); st.tmr = setTimeout(function() { speakAt(st.cur); }, 200);
     };
-    sw.v93ChangeSpeed = function(d, exact) {
-      var nr = exact ? Number(d) : +(st.rate + Number(d)).toFixed(2);
-      if (isNaN(nr)) return;
-      st.rate = Math.max(0.6, Math.min(2.5, nr));
-      try { localStorage.setItem(RATE_STORAGE_KEY, String(st.rate)); } catch (e) {}
-      syncUI(false);
-      if (st.playing && !st.paused) {
-        clearTimeout(st.skipTimer);
-        st.skipTimer = setTimeout(function() { speakFrom(st.curIdx); }, 200);
-      }
+    sw.v93ChangeSpeed = function(d, ex) {
+      st.rate = Math.max(0.6, Math.min(2.5, ex ? Number(d) : +(st.rate + Number(d)).toFixed(2)));
+      localStorage.setItem(RATE_KEY, String(st.rate)); sync(false);
+      if (st.playing && !st.paused) { clearTimeout(st.tmr); st.tmr = setTimeout(function() { speakAt(st.cur); }, 200); }
     };
-    syncUI(false);
   }
 
-  function setupAllForStudio(sw) {
+  function attachStudio(sw) {
     if (!sw) return;
-    installMobileTouchControls(sw);
-    installNativeTtsEngine(sw);
-    dockFloatingSaveBadge(document, false);
-    try { dockFloatingSaveBadge(sw.document, true); } catch (e) {}
+    activeStudioWin = sw;
+    injectMobileControls(sw);
+    injectNativeTts(sw);
+    dockFloatingPills();
   }
 
-  var prevReady = window.__onBridgeReady;
+  var origReady = window.__onBridgeReady;
   window.__onBridgeReady = function(sw) {
-    if (typeof prevReady === 'function') prevReady.apply(this, arguments);
-    setupAllForStudio(sw);
-    setTimeout(function() { setupAllForStudio(sw); }, 450);
+    if (typeof origReady === 'function') origReady.apply(this, arguments);
+    attachStudio(sw);
+    setTimeout(function() { attachStudio(sw); }, 400);
   };
 
-  var origToggleBar = window.toggleCloudBar;
-  if (typeof origToggleBar === 'function') {
-    window.toggleCloudBar = function(hide) {
-      origToggleBar(hide);
-      dockFloatingSaveBadge(document, false);
+  setInterval(function() {
+    var ifr = origById('studioFrame');
+    if (ifr && ifr.contentWindow && ifr.contentWindow !== activeStudioWin) attachStudio(ifr.contentWindow);
+    dockFloatingPills();
+  }, 800);
+})();
+</script>
+<!-- ===== [/연결 패치 끝] ===== -->
+
+ <!-- ===== v9.8.1 소설 뷰어 롱프레스 재생 & 가속 스킵 & 회차 검색 애드온 (모바일 보완판) ===== -->
+<style>
+  .v98-viewer-guard,
+  .v98-viewer-guard .p-row,
+  .v98-viewer-guard [data-line] {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+  }
+  .v98-viewer-guard input,
+  .v98-viewer-guard textarea,
+  .v98-viewer-guard [contenteditable="true"] {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+  .v98-search-fab {
+    position: fixed;
+    top: 62px;
+    right: 14px;
+    z-index: 99990;
+    background: rgba(24, 28, 36, 0.9);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 999px;
+    padding: 7px 13px;
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+    touch-action: manipulation;
+  }
+  .v98-search-panel {
+    position: fixed;
+    top: 104px;
+    right: 14px;
+    width: min(350px, calc(100vw - 28px));
+    z-index: 99991;
+    background: #181c24;
+    color: #f1f5f9;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 14px;
+    padding: 10px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+    display: none;
+    font-size: 13px;
+    touch-action: manipulation;
+  }
+  .v98-search-panel.open {
+    display: block;
+  }
+  .v98-search-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+  .v98-search-input {
+    flex: 1;
+    min-width: 0;
+    background: #0f1319;
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    padding: 7px 9px;
+    font-size: 13px;
+    outline: none;
+  }
+  .v98-search-input:focus {
+    border-color: #60a5fa;
+  }
+  .v98-sbtn {
+    background: #2b3342;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 7px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .v98-sbtn.primary {
+    background: #2563eb;
+  }
+  .v98-search-status {
+    margin-top: 7px;
+    font-size: 11.5px;
+    color: #94a3b8;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .v98-search-list {
+    margin-top: 6px;
+    max-height: 175px;
+    overflow-y: auto;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .v98-search-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 7px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.35;
+    color: #e2e8f0;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .v98-search-item:hover,
+  .v98-search-item.active {
+    background: rgba(59, 130, 246, 0.24);
+  }
+  .v98-ep-badge {
+    background: #f59e0b;
+    color: #111827;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .v98-item-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .v98-search-hit {
+    outline: 2px solid #f59e0b !important;
+    background-color: rgba(245, 158, 11, 0.16) !important;
+    border-radius: 6px;
+    transition: background-color 0.3s ease;
+  }
+  .v98-longpress-flash {
+    outline: 2px solid #3b82f6 !important;
+    background-color: rgba(59, 130, 246, 0.24) !important;
+    border-radius: 6px;
+    transition: all 0.25s ease;
+  }
+  .v98-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 92px;
+    transform: translateX(-50%);
+    z-index: 99999;
+    background: rgba(15, 23, 42, 0.92);
+    color: #fff;
+    padding: 8px 15px;
+    border-radius: 999px;
+    font-size: 12.5px;
+    font-weight: 600;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.18s ease;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    white-space: nowrap;
+  }
+  .v98-toast.show {
+    opacity: 1;
+  }
+</style>
+
+<script>
+(function () {
+  if (window.__v98FixedAddonLoaded) return;
+  window.__v98FixedAddonLoaded = true;
+
+  var HOLD_SKIP_DELAY = 340;     // 앞뒤 버튼 꾹 누르기 인식 시간(ms)
+  var HOLD_SKIP_INTERVAL = 145;  // 연속 이동 간격(ms)
+  var LONG_PRESS_PLAY_MS = 430;  // 문장 꾹 누르기 재생 인식 시간(ms)
+  var MOVE_CANCEL_PX = 15;       // 모바일 손가락 흔들림 허용 오차(px)
+
+  var toastTimer = null;
+  var toastEl = null;
+  var suppressClickUntil = 0;
+  var allowSyntheticClick = false;
+  var lastTouchTs = 0;
+
+  function armClickSuppression(ms) {
+    suppressClickUntil = Date.now() + (ms || 420);
+  }
+
+  function safeTriggerClick(el) {
+    if (!el || typeof el.click !== 'function') return;
+    allowSyntheticClick = true;
+    try {
+      el.click();
+    } finally {
+      allowSyntheticClick = false;
+    }
+  }
+
+  document.addEventListener('click', function (e) {
+    if (allowSyntheticClick) return;
+    if (Date.now() < suppressClickUntil) {
+      suppressClickUntil = 0;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  }, true);
+
+  function showToast(msg) {
+    if (!document.body) return;
+    if (!toastEl) {
+      toastEl = document.createElement('div');
+      toastEl.className = 'v98-toast';
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toastEl.classList.remove('show');
+    }, 1150);
+  }
+
+  function getViewerRoot() {
+    var root = (
+      document.getElementById('highlightViewer') ||
+      document.getElementById('novelViewer') ||
+      document.getElementById('viewerContent') ||
+      document.getElementById('viewer') ||
+      document.querySelector('.highlight-viewer, .novel-viewer')
+    );
+    if (root && !root.classList.contains('v98-viewer-guard')) {
+      root.classList.add('v98-viewer-guard');
+    }
+    return root;
+  }
+
+  function getViewerRows() {
+    var root = getViewerRoot();
+    if (!root) return [];
+    var rows = Array.prototype.slice.call(root.querySelectorAll('.p-row'));
+    if (!rows.length) rows = Array.prototype.slice.call(root.querySelectorAll('[data-line]'));
+    if (!rows.length) rows = Array.prototype.slice.call(root.querySelectorAll('[data-idx]'));
+    if (!rows.length) rows = Array.prototype.slice.call(root.querySelectorAll('p, .para, .line'));
+    return rows;
+  }
+
+  function findViewerRow(target, root) {
+    if (!target || !target.closest || !root) return null;
+    var row = target.closest('.p-row, [data-line], [data-idx], p, .para, .line');
+    return (row && root.contains(row)) ? row : null;
+  }
+
+  /* =========================================================
+     1. 문단·문장 앞뒤 건너뛰기 버튼 꾹 누르기 (가속 스킵)
+     ========================================================= */
+  var skipHoldTimer = null;
+  var skipRepeatTimer = null;
+  var skipTickCount = 0;
+  var skipActive = false;
+  var skipStartX = 0;
+  var skipStartY = 0;
+
+  function detectSkipAction(target) {
+    if (!target || !target.closest) return null;
+    var btn = target.closest('button, [role="button"], [onclick]');
+    if (!btn) return null;
+    if (btn.closest('.v98-search-panel, .v98-search-fab')) return null;
+
+    var onclickStr = btn.getAttribute('onclick') || '';
+    var m = onclickStr.match(/v93TtsStepParagraph\s*\(\s*(-?\d+)\s*\)/);
+    if (m) return { btn: btn, mode: 'para', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
+
+    m = onclickStr.match(/v93TtsStepSentence\s*\(\s*(-?\d+)\s*\)/);
+    if (m) return { btn: btn, mode: 'sent', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
+
+    var meta = [
+      btn.id || '',
+      btn.className || '',
+      btn.title || '',
+      btn.getAttribute('aria-label') || '',
+      (btn.textContent || '').trim()
+    ].join(' ');
+
+    if (/재생|일시정지|정지|play|pause|stop/i.test(meta)) return null;
+
+    if (/이전\s*문단|문단\s*이전|prev.*para|para.*prev/i.test(meta) || /⏮|⏪|◀◀/.test(meta)) {
+      return { btn: btn, mode: 'para', dir: -1 };
+    }
+    if (/다음\s*문단|문단\s*다음|next.*para|para.*next/i.test(meta) || /⏭|⏩|▶▶/.test(meta)) {
+      return { btn: btn, mode: 'para', dir: 1 };
+    }
+    if (/이전\s*(문장|줄)|prev.*(sent|line)|(sent|line).*prev/i.test(meta)) {
+      return { btn: btn, mode: 'sent', dir: -1 };
+    }
+    if (/다음\s*(문장|줄)|next.*(sent|line)|(sent|line).*next/i.test(meta)) {
+      return { btn: btn, mode: 'sent', dir: 1 };
+    }
+    return null;
+  }
+
+  function runSkipStep(action, mult) {
+    var delta = action.dir * mult;
+    if (action.mode === 'para' && typeof window.v93TtsStepParagraph === 'function') {
+      window.v93TtsStepParagraph(delta);
+    } else if (action.mode === 'sent' && typeof window.v93TtsStepSentence === 'function') {
+      window.v93TtsStepSentence(delta);
+    } else if (typeof window.v93TtsStepParagraph === 'function') {
+      window.v93TtsStepParagraph(delta);
+    } else {
+      var count = Math.min(Math.abs(delta), 5);
+      for (var i = 0; i < count; i++) {
+        safeTriggerClick(action.btn);
+      }
+    }
+    var arrow = delta < 0 ? '⏪ ' : '⏩ ';
+    var sign = delta > 0 ? '+' : '';
+    var unit = action.mode === 'sent' ? '문장' : '문단';
+    showToast(arrow + sign + delta + unit + ' 고속 이동');
+  }
+
+  function clearSkipTimers() {
+    clearTimeout(skipHoldTimer);
+    clearInterval(skipRepeatTimer);
+    skipHoldTimer = null;
+    skipRepeatTimer = null;
+    skipTickCount = 0;
+    if (skipActive) {
+      armClickSuppression(420);
+      skipActive = false;
+    }
+  }
+
+  function startSkipHold(target, x, y) {
+    var action = detectSkipAction(target);
+    if (!action) return false;
+
+    action.btn.style.webkitTouchCallout = 'none';
+    action.btn.style.webkitUserSelect = 'none';
+    action.btn.style.userSelect = 'none';
+
+    clearSkipTimers();
+    skipStartX = x;
+    skipStartY = y;
+
+    skipHoldTimer = setTimeout(function () {
+      skipHoldTimer = null;
+      skipActive = true;
+      armClickSuppression(4000);
+      if (navigator.vibrate) {
+        try { navigator.vibrate(15); } catch (err) {}
+      }
+      skipTickCount = 0;
+      runSkipStep(action, 1);
+
+      skipRepeatTimer = setInterval(function () {
+        armClickSuppression(2000);
+        skipTickCount++;
+        var mult = skipTickCount > 15 ? 5 : (skipTickCount > 6 ? 3 : 1);
+        runSkipStep(action, mult);
+      }, HOLD_SKIP_INTERVAL);
+    }, HOLD_SKIP_DELAY);
+
+    return true;
+  }
+
+  /* =========================================================
+     2. 뷰어 문장 꾹 눌러 해당 위치부터 오디오 재생
+     ========================================================= */
+  var lpTimer = null;
+  var lpStartX = 0;
+  var lpStartY = 0;
+  var lpStartScrollY = 0;
+  var lpActive = false;
+
+  function getViewerScrollTop(root) {
+    return (window.pageYOffset || document.documentElement.scrollTop || 0) + (root ? root.scrollTop : 0);
+  }
+
+  function cancelSentenceLongPress() {
+    clearTimeout(lpTimer);
+    lpTimer = null;
+    if (lpActive) {
+      armClickSuppression(420);
+      setTimeout(function () { lpActive = false; }, 120);
+    }
+  }
+
+  function detectSentenceIndex(row, target, clientX, clientY) {
+    if (target && target.closest) {
+      var sentSpan = target.closest('[data-sent], [data-sidx], [data-sent-idx]');
+      if (sentSpan) {
+        var raw =
+          sentSpan.getAttribute('data-sent') ||
+          sentSpan.getAttribute('data-sidx') ||
+          sentSpan.getAttribute('data-sent-idx');
+        var parsed = parseInt(raw, 10);
+        if (!isNaN(parsed)) return parsed;
+      }
+    }
+
+    var textBox = row.querySelector('.p-text') || row;
+    var prevUs = textBox.style.userSelect;
+    var prevWus = textBox.style.webkitUserSelect;
+    textBox.style.userSelect = 'text';
+    textBox.style.webkitUserSelect = 'text';
+
+    try {
+      var startNode = null;
+      var startOffset = 0;
+
+      if (document.caretRangeFromPoint) {
+        var range = document.caretRangeFromPoint(clientX, clientY);
+        if (range) {
+          startNode = range.startContainer;
+          startOffset = range.startOffset;
+        }
+      } else if (document.caretPositionFromPoint) {
+        var pos = document.caretPositionFromPoint(clientX, clientY);
+        if (pos) {
+          startNode = pos.offsetNode;
+          startOffset = pos.offset;
+        }
+      }
+
+      if (startNode && textBox.contains(startNode)) {
+        var pre = document.createRange();
+        pre.selectNodeContents(textBox);
+        pre.setEnd(startNode, startOffset);
+        var beforeText = pre.toString();
+        var splits = beforeText.match(/[.!?…。！？]["'”’)\]]*\s+/g);
+        return splits ? splits.length : 0;
+      }
+    } catch (err) {
+    } finally {
+      textBox.style.userSelect = prevUs;
+      textBox.style.webkitUserSelect = prevWus;
+    }
+    return 0;
+  }
+
+  function playFromRow(row, target, clientX, clientY) {
+    var rows = getViewerRows();
+    var rawLine = row.getAttribute('data-line');
+    if (rawLine === null) rawLine = row.getAttribute('data-idx');
+    var lineIdx = parseInt(rawLine, 10);
+    if (isNaN(lineIdx)) lineIdx = rows.indexOf(row);
+    if (lineIdx < 0) return;
+
+    var sentIdx = detectSentenceIndex(row, target, clientX, clientY);
+
+    row.classList.add('v98-longpress-flash');
+    setTimeout(function () {
+      row.classList.remove('v98-longpress-flash');
+    }, 750);
+
+    if (window.getSelection) {
+      try { window.getSelection().removeAllRanges(); } catch (err) {}
+    }
+    if (navigator.vibrate) {
+      try { navigator.vibrate(25); } catch (err) {}
+    }
+
+    if (typeof window.v93TtsPlay === 'function') {
+      window.v93TtsPlay(lineIdx, sentIdx);
+      showToast('🔊 ' + (lineIdx + 1) + '번 문단부터 재생합니다');
+    } else if (typeof window.playFromIndex === 'function') {
+      window.playFromIndex(lineIdx, sentIdx);
+      showToast('🔊 ' + (lineIdx + 1) + '번 문단부터 재생합니다');
+    } else {
+      safeTriggerClick(row);
+      showToast('🔊 선택한 문장 위치로 이동했습니다');
+    }
+  }
+
+  function startSentenceHold(target, x, y) {
+    var root = getViewerRoot();
+    if (!root || !root.contains(target)) return;
+    if (target.closest('button, a, input, textarea, select, .v98-search-panel, .v98-search-fab')) return;
+
+    var row = findViewerRow(target, root);
+    if (!row) return;
+
+    cancelSentenceLongPress();
+    lpActive = false;
+    lpStartX = x;
+    lpStartY = y;
+    lpStartScrollY = getViewerScrollTop(root);
+
+    lpTimer = setTimeout(function () {
+      lpTimer = null;
+      lpActive = true;
+      armClickSuppression(3000);
+      playFromRow(row, target, lpStartX, lpStartY);
+    }, LONG_PRESS_PLAY_MS);
+  }
+
+  function handleMove(x, y) {
+    if (skipHoldTimer && Math.hypot(x - skipStartX, y - skipStartY) > 24) {
+      clearSkipTimers();
+    }
+    if (lpTimer && Math.hypot(x - lpStartX, y - lpStartY) > MOVE_CANCEL_PX) {
+      cancelSentenceLongPress();
+    }
+  }
+
+  /* 모바일 터치 & 데스크톱 마우스 통합 바인딩 (pointercancel 오작동 방지) */
+  document.addEventListener('touchstart', function (e) {
+    lastTouchTs = Date.now();
+    if (e.touches.length !== 1) {
+      clearSkipTimers();
+      cancelSentenceLongPress();
+      return;
+    }
+    var t = e.touches[0];
+    if (!startSkipHold(e.target, t.clientX, t.clientY)) {
+      startSentenceHold(e.target, t.clientX, t.clientY);
+    }
+  }, { capture: true, passive: true });
+
+  document.addEventListener('touchmove', function (e) {
+    if (!e.touches.length) return;
+    var t = e.touches[0];
+    handleMove(t.clientX, t.clientY);
+  }, { capture: true, passive: true });
+
+  ['touchend', 'touchcancel'].forEach(function (ev) {
+    window.addEventListener(ev, function () {
+      clearSkipTimers();
+      cancelSentenceLongPress();
+    }, { capture: true, passive: true });
+  });
+
+  document.addEventListener('mousedown', function (e) {
+    if (Date.now() - lastTouchTs < 800) return;
+    if (e.button !== 0) return;
+    if (!startSkipHold(e.target, e.clientX, e.clientY)) {
+      startSentenceHold(e.target, e.clientX, e.clientY);
+    }
+  }, true);
+
+  document.addEventListener('mousemove', function (e) {
+    if (Date.now() - lastTouchTs < 800) return;
+    handleMove(e.clientX, e.clientY);
+  }, true);
+
+  window.addEventListener('mouseup', function () {
+    if (Date.now() - lastTouchTs < 800) return;
+    clearSkipTimers();
+    cancelSentenceLongPress();
+  }, true);
+
+  window.addEventListener('blur', function () {
+    clearSkipTimers();
+    cancelSentenceLongPress();
+  });
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      clearSkipTimers();
+      cancelSentenceLongPress();
+    }
+  });
+
+  window.addEventListener('scroll', function () {
+    if (!lpTimer) return;
+    var root = getViewerRoot();
+    if (Math.abs(getViewerScrollTop(root) - lpStartScrollY) > 8) {
+      cancelSentenceLongPress();
+    }
+  }, true);
+
+  document.addEventListener('contextmenu', function (e) {
+    if (skipHoldTimer || skipRepeatTimer || skipActive) {
+      e.preventDefault();
+      return;
+    }
+    var root = getViewerRoot();
+    if ((lpTimer || lpActive) && root && root.contains(e.target)) {
+      e.preventDefault();
+    }
+  }, true);
+
+  /* =========================================================
+     3. 회차·문장 검색 UI 및 해당 구간 이동
+     ========================================================= */
+  var matches = [];
+  var currentMatchPos = -1;
+
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function clearSearchHighlights() {
+    var hits = document.querySelectorAll('.v98-search-hit');
+    for (var i = 0; i < hits.length; i++) {
+      hits[i].classList.remove('v98-search-hit');
+    }
+  }
+
+  function buildEpisodeRegex(q) {
+    var epMatch = q.trim().match(/^(?:제\s*)?(\d+)\s*(화|편|장|권)$/);
+    if (!epMatch) return null;
+    var num = epMatch[1];
+    var unit = epMatch[2];
+    return {
+      anyLine: new RegExp('(?:^|[^0-9])' + num + '\\s*' + unit),
+      headerLine: new RegExp('^\\s*[\\[〈<【(#*\\-]*\\s*(?:제\\s*)?' + num + '\\s*' + unit + '(?:[^0-9]|$)')
     };
   }
 
-  function bindFrame(ifr) {
-    if (!ifr || ifr.__v2Bound) return;
-    ifr.__v2Bound = true;
-    ifr.addEventListener('load', function() {
-      try {
-        if (ifr.contentWindow) {
-          setupAllForStudio(ifr.contentWindow);
-          setTimeout(function() { setupAllForStudio(ifr.contentWindow); }, 450);
-        }
-      } catch (e) {}
-    });
-    try {
-      if (ifr.contentWindow && ifr.contentWindow.document && ifr.contentWindow.document.readyState === 'complete') {
-        setupAllForStudio(ifr.contentWindow);
+  function initSearchUI() {
+    if (!document.body) return;
+
+    /* 기존 깨진 잔여 요소가 있으면 정리 */
+    var oldNodes = document.querySelectorAll('.v98-search-fab, .v98-search-panel');
+    for (var i = 0; i < oldNodes.length; i++) {
+      if (oldNodes[i].parentNode) oldNodes[i].parentNode.removeChild(oldNodes[i]);
+    }
+
+    getViewerRoot();
+
+    var fab = document.createElement('button');
+    fab.type = 'button';
+    fab.className = 'v98-search-fab';
+    fab.textContent = '🔍 회차 검색';
+
+    var panel = document.createElement('div');
+    panel.className = 'v98-search-panel';
+    panel.innerHTML =
+      '<div class="v98-search-row">' +
+        '<input type="search" class="v98-search-input" placeholder="예: 10화 또는 본문 단어" />' +
+        '<button type="button" class="v98-sbtn primary" data-act="find">찾기</button>' +
+        '<button type="button" class="v98-sbtn" data-act="prev" title="이전 결과">▲</button>' +
+        '<button type="button" class="v98-sbtn" data-act="next" title="다음 결과">▼</button>' +
+        '<button type="button" class="v98-sbtn" data-act="close" title="닫기">✕</button>' +
+      '</div>' +
+      '<div class="v98-search-status"><span class="v98-status-msg">이동 후 문장을 꾹 누르면 바로 재생됩니다.</span></div>' +
+      '<div class="v98-search-list"></div>';
+
+    document.body.appendChild(fab);
+    document.body.appendChild(panel);
+
+    var input = panel.querySelector('.v98-search-input');
+    var statusMsg = panel.querySelector('.v98-status-msg');
+    var listBox = panel.querySelector('.v98-search-list');
+
+    function jumpToMatch(pos) {
+      if (!matches.length) return;
+      currentMatchPos = (pos + matches.length) % matches.length;
+      clearSearchHighlights();
+
+      var item = matches[currentMatchPos];
+      item.row.classList.add('v98-search-hit');
+      item.row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      statusMsg.textContent =
+        '검색 결과 ' + (currentMatchPos + 1) + ' / ' + matches.length +
+        ' (문장을 꾹 누르면 그곳부터 재생)';
+
+      var children = listBox.children;
+      for (var idx = 0; idx < children.length; idx++) {
+        children[idx].classList.toggle('active', idx === currentMatchPos);
       }
-    } catch (e) {}
+    }
+
+    function runSearch() {
+      var q = input.value.trim();
+      listBox.innerHTML = '';
+      clearSearchHighlights();
+      matches = [];
+      currentMatchPos = -1;
+
+      if (!q) {
+        statusMsg.textContent = '검색할 회차(예: 10화)나 문장을 입력해 주세요.';
+        return;
+      }
+
+      var rows = getViewerRows();
+      if (!rows.length) {
+        statusMsg.textContent = '뷰어에 열린 원고가 없습니다. 먼저 원고를 열어주세요.';
+        return;
+      }
+
+      var epRule = buildEpisodeRegex(q);
+      var qLower = q.toLowerCase();
+      var firstHeaderPos = -1;
+
+      rows.forEach(function (row, idx) {
+        var textEl = row.querySelector('.p-text') || row;
+        var text = (textEl.textContent || '').trim();
+        if (!text) return;
+
+        var matched = false;
+        var isHeader = false;
+
+        if (epRule) {
+          if (epRule.anyLine.test(text)) {
+            matched = true;
+            isHeader = text.length < 65 && epRule.headerLine.test(text);
+          }
+        } else if (text.toLowerCase().indexOf(qLower) !== -1) {
+          matched = true;
+          isHeader = text.length < 55 && /^(?:제\s*)?\d+\s*(?:화|편|장)|^프롤로그|^에필로그/.test(text);
+        }
+
+        if (matched) {
+          var rawLine = row.getAttribute('data-line');
+          var lineIdx = rawLine !== null ? parseInt(rawLine, 10) : idx;
+          if (isHeader && firstHeaderPos === -1) firstHeaderPos = matches.length;
+          matches.push({
+            row: row,
+            lineIdx: isNaN(lineIdx) ? idx : lineIdx,
+            text: text,
+            isHeader: isHeader
+          });
+        }
+      });
+
+      if (!matches.length) {
+        statusMsg.textContent = '"' + q + '" 검색 결과가 없습니다.';
+        return;
+      }
+
+      input.blur();
+
+      matches.forEach(function (m, pos) {
+        var div = document.createElement('div');
+        div.className = 'v98-search-item';
+        div.innerHTML =
+          (m.isHeader ? '<span class="v98-ep-badge">회차</span>' : '') +
+          '<span class="v98-item-text">#' + (m.lineIdx + 1) + ' ' +
+          escapeHtml(m.text.slice(0, 42)) + '</span>';
+        div.addEventListener('click', function () {
+          jumpToMatch(pos);
+        });
+        listBox.appendChild(div);
+      });
+
+      jumpToMatch(firstHeaderPos !== -1 ? firstHeaderPos : 0);
+    }
+
+    fab.addEventListener('click', function () {
+      var open = panel.classList.toggle('open');
+      if (open) {
+        setTimeout(function () { input.focus(); }, 50);
+      }
+    });
+
+    panel.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      var act = btn.getAttribute('data-act');
+      if (act === 'find') runSearch();
+      else if (act === 'prev') jumpToMatch(currentMatchPos - 1);
+      else if (act === 'next') jumpToMatch(currentMatchPos + 1);
+      else if (act === 'close') {
+        panel.classList.remove('open');
+        clearSearchHighlights();
+      }
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runSearch();
+      }
+    });
   }
 
-  var curFrame = document.getElementById('studioFrame');
-  if (curFrame) bindFrame(curFrame);
-  var wrap = document.getElementById('frameWrap');
-  if (wrap && typeof MutationObserver !== 'undefined') {
-    new MutationObserver(function() {
-      var f = document.getElementById('studioFrame');
-      if (f) bindFrame(f);
-    }).observe(wrap, { childList: true });
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSearchUI);
+  } else {
+    initSearchUI();
   }
-
-  setInterval(function() {
-    dockFloatingSaveBadge(document, false);
-    if (activeStudioWin) { try { dockFloatingSaveBadge(activeStudioWin.document, true); } catch (e) {} }
-  }, 900);
 })();
 </script>
-<!-- ===== [/통합 패치 끝] ===== --> 
+ 
+<script src="./v99-save-patch.js"></script>
 </body>
 </html>
