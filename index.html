@@ -3111,5 +3111,491 @@
 </script>
 <!-- ===== /v9.8 애드온 끝 ===== -->
 <script src="./v99-save-patch.js"></script>
+<!-- ===== [안드로이드 APK 네이티브 내장 음성(AndroidTTS) 연결 브릿지] ===== -->
+<script id="androidNativeTtsBridge">
+(function() {
+  if (window.__ANDROID_NATIVE_TTS_BRIDGE_ACTIVE) return;
+  window.__ANDROID_NATIVE_TTS_BRIDGE_ACTIVE = true;
+
+  // 새 APK 앱 환경이 아니면(PC·일반 브라우저) 아무것도 바꾸지 않고 종료
+  if (!window.AndroidTTS) return;
+
+  var activeStudioWin = null;
+  var BATCH_CHAR_LIMIT = 55000;
+  var RATE_STORAGE_KEY = 'magyo_android_native_tts_rate_v1';
+
+  window.onNativeTtsIndex = function(localIdx) {
+    if (activeStudioWin && typeof activeStudioWin.__handleNativeTtsIndex === 'function') {
+      activeStudioWin.__handleNativeTtsIndex(Number(localIdx) || 0);
+    }
+  };
+
+  window.onNativeTtsDone = function() {
+    if (activeStudioWin && typeof activeStudioWin.__handleNativeTtsDone === 'function') {
+      activeStudioWin.__handleNativeTtsDone();
+    }
+  };
+
+  function cleanTextForNativeTts(str) {
+    return String(str || '')
+      .replace(/^[#*\-\s]+/, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/[“”"‘’']/g, ' ')
+      .replace(/(?:…+|\.{2,}|⋯+|―+)/g, ', ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function splitParagraphToSentences(rawLine, isHeader) {
+    var t = String(rawLine || '').trim();
+    if (!t || t === '* * *' || /^[-=*_─━]{3,}$/.test(t)) return [];
+    if (isHeader) {
+      var hSp = cleanTextForNativeTts(t);
+      return hSp ? [{ raw: t, sp: hSp.slice(0, 300) }] : [];
+    }
+
+    var primary = [];
+    var s = 0, len = t.length;
+    for (var i = 0; i < len; i++) {
+      var ch = t.charAt(i);
+      if (ch === '.' || ch === '!' || ch === '?') {
+        var e = i + 1;
+        while (e < len && /[.!?…⋯”"’')\]]/.test(t.charAt(e))) e++;
+        if (e === len || /\s/.test(t.charAt(e)) || /[“"‘']/.test(t.charAt(e))) {
+          primary.push(t.slice(s, e).trim());
+          i = e - 1;
+          s = e;
+        }
+      }
+    }
+    if (s < len) {
+      var rest = t.slice(s).trim();
+      if (rest) primary.push(rest);
+    }
+
+    var out = [];
+    for (var p = 0; p < primary.length; p++) {
+      var seg = primary[p];
+      var clean = cleanTextForNativeTts(seg);
+      if (!clean) continue;
+      if (clean.length <= 280) {
+        out.push({ raw: seg, sp: clean });
+      } else {
+        var pos = 0;
+        while (pos < clean.length) {
+          var slice = clean.slice(pos, pos + 240);
+          if (pos + 240 < clean.length) {
+            var cut = slice.lastIndexOf(', ');
+            if (cut < 80) cut = slice.lastIndexOf(' ');
+            if (cut > 60) slice = clean.slice(pos, pos + cut + 1);
+          }
+          var piece = slice.trim();
+          if (piece) out.push({ raw: piece, sp: piece });
+          pos += slice.length;
+        }
+      }
+    }
+    return out;
+  }
+
+  function installIntoStudioWindow(sw) {
+    if (!sw || !sw.document) return;
+    activeStudioWin = sw;
+
+    var savedRate = 1.0;
+    try {
+      var r = parseFloat(localStorage.getItem(RATE_STORAGE_KEY) || '1.0');
+      if (!isNaN(r) && r >= 0.6 && r <= 2.5) savedRate = r;
+    } catch (e) {}
+
+    var st = sw.__nativeTtsState || {
+      playing: false,
+      paused: false,
+      rate: savedRate,
+      tabName: '',
+      textLen: -1,
+      totalLines: 0,
+      items: [],
+      curIdx: 0,
+      batchOffset: 0,
+      batchLen: 0,
+      startedAt: 0,
+      skipTimer: null
+    };
+    sw.__nativeTtsState = st;
+
+    function escHtml(s) {
+      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function stopAnyWebAudioInStudio() {
+      try { if (sw.speechSynthesis) sw.speechSynthesis.cancel(); } catch (e) {}
+      try {
+        var audios = sw.document.querySelectorAll('audio');
+        for (var i = 0; i < audios.length; i++) {
+          try { audios[i].pause(); } catch (e2) {}
+        }
+      } catch (e) {}
+    }
+
+    function getTab() {
+      if (typeof sw.getActiveTab === 'function') return sw.getActiveTab();
+      if (Array.isArray(sw.fileTabs) && typeof sw.activeTabIdx === 'number') {
+        return sw.fileTabs[sw.activeTabIdx] || null;
+      }
+      return null;
+    }
+
+    function ensureItemsBuilt(tab) {
+      if (!tab || !tab.text || !tab.text.trim()) {
+        st.items = [];
+        st.totalLines = 0;
+        return false;
+      }
+      if (st.tabName === tab.name && st.textLen === tab.text.length && st.items.length > 0) {
+        return true;
+      }
+      var lines = tab.text.split('\n');
+      var eps = (tab.episodes && tab.episodes.length)
+        ? tab.episodes
+        : [{ title: tab.name || '원고 낭독', startLine: 0, hasExplicitHeader: false, lines: lines }];
+
+      var list = [];
+      for (var eIdx = 0; eIdx < eps.length; eIdx++) {
+        var ep = eps[eIdx];
+        var epLines = ep.lines || [];
+        for (var lIdx = 0; lIdx < epLines.length; lIdx++) {
+          var rawLine = epLines[lIdx];
+          var gLine = (ep.startLine || 0) + lIdx;
+          var isHdr = Boolean(lIdx === 0 && ep.hasExplicitHeader);
+          var sents = splitParagraphToSentences(rawLine, isHdr);
+          for (var sIdx = 0; sIdx < sents.length; sIdx++) {
+            list.push({
+              epIdx: eIdx,
+              epTitle: ep.title || '원고 낭독',
+              lineIdx: gLine,
+              sentIdx: sIdx,
+              rawLine: String(rawLine || '').trim(),
+              rawSent: sents[sIdx].raw,
+              sp: sents[sIdx].sp
+            });
+          }
+        }
+      }
+      st.tabName = tab.name;
+      st.textLen = tab.text.length;
+      st.totalLines = lines.length;
+      st.items = list;
+      if (st.curIdx >= list.length) st.curIdx = 0;
+      return list.length > 0;
+    }
+
+    function saveBookmark(item) {
+      if (!item) return;
+      var tab = getTab();
+      if (!tab) return;
+      try {
+        var BM_KEY = 'magyo_studio_tts_autobm_v93';
+        var bms = JSON.parse(localStorage.getItem(BM_KEY) || '{}') || {};
+        var pct = st.totalLines > 0 ? Math.round(((item.lineIdx + 1) / st.totalLines) * 100) : 0;
+        var norm = (typeof sw.normalizeSig === 'function')
+          ? sw.normalizeSig(item.rawLine).slice(0, 45)
+          : item.rawLine.slice(0, 45);
+        var rec = {
+          fileName: tab.name,
+          epIdx: item.epIdx,
+          epTitle: item.epTitle,
+          lineIdx: item.lineIdx,
+          sentIdx: item.sentIdx,
+          snippet: item.rawLine.slice(0, 70),
+          normSig: norm,
+          pct: pct,
+          updatedAt: Date.now()
+        };
+        bms[tab.name] = rec;
+        bms.__LAST__ = rec;
+        localStorage.setItem(BM_KEY, JSON.stringify(bms));
+      } catch (e) {}
+    }
+
+    function syncPlayerUI(scrollViewer) {
+      var doc = sw.document;
+      var isOn = st.playing && !st.paused;
+      var mBtn = doc.getElementById('v93BtnPlayMain');
+      if (mBtn) {
+        mBtn.classList.toggle('is-playing', isOn);
+        mBtn.textContent = isOn ? '⏸ 일시정지' : '▶ 듣기';
+      }
+      var sBadge = doc.getElementById('v93SpeedBadge');
+      if (sBadge) {
+        sBadge.textContent = st.rate.toFixed(1) + 'x';
+      }
+
+      var item = st.items[st.curIdx];
+      if (!item) return;
+
+      if (!doc.hidden) {
+        var epEl = doc.getElementById('v93StatusEp');
+        var pvEl = doc.getElementById('v93StatusPreview');
+        if (epEl) {
+          epEl.innerHTML = '<span style="color:#4ade80;font-weight:800;">📱 내장 음성</span> · ' +
+            escHtml(item.epTitle + ' · ' + (item.lineIdx + 1) + '줄');
+        }
+        if (pvEl) {
+          pvEl.textContent = item.rawSent || item.rawLine;
+        }
+        var oldRows = doc.querySelectorAll('#highlightViewer .v93-tts-row-active');
+        for (var i = 0; i < oldRows.length; i++) oldRows[i].classList.remove('v93-tts-row-active');
+
+        var row = doc.querySelector('#highlightViewer .p-row[data-line="' + item.lineIdx + '"]');
+        if (row) {
+          row.classList.add('v93-tts-row-active');
+          if (scrollViewer !== false) {
+            try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+          }
+        }
+      }
+    }
+
+    function sendNativeBatchFrom(globalIdx) {
+      if (!st.items.length) return;
+      var idx = Math.max(0, Math.min(st.items.length - 1, globalIdx));
+      st.curIdx = idx;
+      st.playing = true;
+      st.paused = false;
+
+      var chunk = [];
+      var charSum = 0;
+      for (var i = idx; i < st.items.length; i++) {
+        var sp = st.items[i].sp;
+        if (chunk.length > 0 && (charSum + sp.length) > BATCH_CHAR_LIMIT) break;
+        chunk.push(sp);
+        charSum += sp.length + 2;
+      }
+
+      st.batchOffset = idx;
+      st.batchLen = chunk.length;
+      st.startedAt = Date.now();
+
+      stopAnyWebAudioInStudio();
+      saveBookmark(st.items[idx]);
+      syncPlayerUI(true);
+
+      try {
+        window.AndroidTTS.speakList(JSON.stringify(chunk), 0, Number(st.rate) || 1.0);
+      } catch (err) {
+        if (typeof sw.showToast === 'function') sw.showToast('내장 음성 호출 오류: ' + err.message);
+      }
+    }
+
+    sw.__handleNativeTtsIndex = function(localIdx) {
+      if (!st.playing || st.paused) return;
+      var gIdx = st.batchOffset + localIdx;
+      if (gIdx >= 0 && gIdx < st.items.length) {
+        st.curIdx = gIdx;
+        saveBookmark(st.items[gIdx]);
+        syncPlayerUI(true);
+      }
+    };
+
+    sw.__handleNativeTtsDone = function() {
+      if (!st.playing || st.paused) return;
+      if (Date.now() - st.startedAt < 400 && st.batchLen > 1) return;
+      var nextBatchStart = st.batchOffset + st.batchLen;
+      if (nextBatchStart < st.items.length) {
+        sendNativeBatchFrom(nextBatchStart);
+      } else {
+        sw.v93TtsStop(true);
+      }
+    };
+
+    if (!sw.__nativeVisBound) {
+      sw.__nativeVisBound = true;
+      sw.document.addEventListener('visibilitychange', function() {
+        if (!sw.document.hidden && st.playing && !st.paused) {
+          syncPlayerUI(true);
+        }
+      });
+    }
+
+    sw.v93TtsPlay = function(startLine, startSent) {
+      var tab = getTab();
+      if (!ensureItemsBuilt(tab)) {
+        if (typeof sw.showToast === 'function') sw.showToast('먼저 원고를 불러와 주세요.');
+        return;
+      }
+      var dock = sw.document.getElementById('v93TtsPlayerDock');
+      if (dock) dock.classList.add('open');
+
+      if (typeof startLine !== 'number' && st.paused && st.items.length > 0) {
+        sendNativeBatchFrom(st.curIdx);
+        return;
+      }
+
+      var targetLine = typeof startLine === 'number' ? startLine : -1;
+      var targetSent = typeof startSent === 'number' ? startSent : 0;
+
+      if (targetLine < 0) {
+        try {
+          var bms = JSON.parse(localStorage.getItem('magyo_studio_tts_autobm_v93') || '{}');
+          if (bms && bms[tab.name] && typeof bms[tab.name].lineIdx === 'number') {
+            targetLine = bms[tab.name].lineIdx;
+            targetSent = bms[tab.name].sentIdx || 0;
+          }
+        } catch (e) {}
+      }
+
+      var foundIdx = 0;
+      if (targetLine >= 0) {
+        var matched = false;
+        for (var i = 0; i < st.items.length; i++) {
+          var it = st.items[i];
+          if (it.lineIdx > targetLine || (it.lineIdx === targetLine && it.sentIdx >= targetSent)) {
+            foundIdx = i;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched && st.items.length > 0) foundIdx = st.items.length - 1;
+      }
+      sendNativeBatchFrom(foundIdx);
+    };
+
+    sw.v93TtsPause = function() {
+      clearTimeout(st.skipTimer);
+      st.playing = false;
+      st.paused = true;
+      try { window.AndroidTTS.stop(); } catch (e) {}
+      stopAnyWebAudioInStudio();
+      saveBookmark(st.items[st.curIdx]);
+      syncPlayerUI(false);
+      if (typeof window.saveToCloudSilent === 'function') {
+        try { window.saveToCloudSilent(); } catch (e) {}
+      }
+    };
+
+    sw.v93TtsTogglePlayPause = function() {
+      if (st.playing && !st.paused) sw.v93TtsPause();
+      else sw.v93TtsPlay();
+    };
+
+    sw.v93TtsStop = function() {
+      clearTimeout(st.skipTimer);
+      st.playing = false;
+      st.paused = false;
+      try { window.AndroidTTS.stop(); } catch (e) {}
+      stopAnyWebAudioInStudio();
+      var rows = sw.document.querySelectorAll('#highlightViewer .v93-tts-row-active');
+      for (var i = 0; i < rows.length; i++) rows[i].classList.remove('v93-tts-row-active');
+      syncPlayerUI(false);
+    };
+
+    sw.v93TtsStepSentence = function(delta) {
+      var tab = getTab();
+      if (!ensureItemsBuilt(tab)) return;
+      var step = Number(delta) || 1;
+      st.curIdx = Math.max(0, Math.min(st.items.length - 1, st.curIdx + step));
+      saveBookmark(st.items[st.curIdx]);
+      syncPlayerUI(true);
+      clearTimeout(st.skipTimer);
+      st.skipTimer = setTimeout(function() {
+        sendNativeBatchFrom(st.curIdx);
+      }, 150);
+    };
+
+    sw.v93TtsStepParagraph = function(delta) {
+      var tab = getTab();
+      if (!ensureItemsBuilt(tab)) return;
+      var step = Number(delta) || 1;
+      var dir = step >= 0 ? 1 : -1;
+      var moves = Math.abs(step);
+      var idx = st.curIdx;
+      for (var m = 0; m < moves; m++) {
+        var curLine = st.items[idx].lineIdx;
+        while (idx + dir >= 0 && idx + dir < st.items.length && st.items[idx + dir].lineIdx === curLine) {
+          idx += dir;
+        }
+        if (idx + dir >= 0 && idx + dir < st.items.length) idx += dir;
+        if (dir < 0) {
+          var targetL = st.items[idx].lineIdx;
+          while (idx - 1 >= 0 && st.items[idx - 1].lineIdx === targetL) idx--;
+        }
+      }
+      st.curIdx = idx;
+      saveBookmark(st.items[st.curIdx]);
+      syncPlayerUI(true);
+      clearTimeout(st.skipTimer);
+      st.skipTimer = setTimeout(function() {
+        sendNativeBatchFrom(st.curIdx);
+      }, 150);
+    };
+
+    sw.v93ChangeSpeed = function(d, exact) {
+      var nextRate = exact ? Number(d) : +(st.rate + Number(d)).toFixed(2);
+      if (isNaN(nextRate)) return;
+      st.rate = Math.max(0.6, Math.min(2.5, nextRate));
+      try { localStorage.setItem(RATE_STORAGE_KEY, String(st.rate)); } catch (e) {}
+      syncPlayerUI(false);
+      if (st.playing && !st.paused) {
+        clearTimeout(st.skipTimer);
+        st.skipTimer = setTimeout(function() {
+          sendNativeBatchFrom(st.curIdx);
+        }, 150);
+      }
+    };
+
+    syncPlayerUI(false);
+  }
+
+  var prevOnBridgeReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(studioWin) {
+    if (typeof prevOnBridgeReady === 'function') {
+      prevOnBridgeReady.apply(this, arguments);
+    }
+    installIntoStudioWindow(studioWin);
+    setTimeout(function() { installIntoStudioWindow(studioWin); }, 350);
+  };
+
+  function bindIframe(ifr) {
+    if (!ifr || ifr.__nativeBound) return;
+    ifr.__nativeBound = true;
+    ifr.addEventListener('load', function() {
+      try {
+        if (ifr.contentWindow) {
+          installIntoStudioWindow(ifr.contentWindow);
+          setTimeout(function() { installIntoStudioWindow(ifr.contentWindow); }, 350);
+        }
+      } catch (e) {}
+    });
+    try {
+      if (ifr.contentWindow && ifr.contentWindow.document && ifr.contentWindow.document.readyState === 'complete') {
+        installIntoStudioWindow(ifr.contentWindow);
+      }
+    } catch (e) {}
+  }
+
+  var existingFrame = document.getElementById('studioFrame');
+  if (existingFrame) bindIframe(existingFrame);
+
+  var frameWrap = document.getElementById('frameWrap');
+  if (frameWrap && typeof MutationObserver !== 'undefined') {
+    new MutationObserver(function() {
+      var f = document.getElementById('studioFrame');
+      if (f) bindIframe(f);
+    }).observe(frameWrap, { childList: true });
+  }
+
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden && activeStudioWin && activeStudioWin.__nativeTtsState) {
+      var s = activeStudioWin.__nativeTtsState;
+      if (s.playing && !s.paused && typeof activeStudioWin.__handleNativeTtsIndex === 'function') {
+        activeStudioWin.__handleNativeTtsIndex(s.curIdx - s.batchOffset);
+      }
+    }
+  });
+})();
+</script>
+<!-- ===== [/안드로이드 APK 네이티브 내장 음성(AndroidTTS) 연결 브릿지 끝] ===== -->
+ 
 </body>
 </html>
