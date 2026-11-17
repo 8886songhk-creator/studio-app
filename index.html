@@ -2287,5 +2287,276 @@
 </script>
 <!-- ==================== [/v9.7 올인원 마스터 통합 패치 끝] ==================== -->
 
+
+ <!-- ==================== [v9.7.1 순정 구글 한국어 무료 웹스트림 전용 패치 — 유다오 기계음 완전 제거 & 90자 정밀 패킹] ==================== -->
+<script id="magyoV971PureGoogleStreamScript">
+(function() {
+  if (window._MAGYO_V971_PURE_GOOGLE_ACTIVE) return;
+  window._MAGYO_V971_PURE_GOOGLE_ACTIVE = true;
+
+  // 1. 직전 오디오 객체 정지 및 Referrer 차단(구글 404 방지) 강제 적용
+  if (typeof window.v93TtsStop === 'function') {
+    try { window.v93TtsStop(true); } catch (e) {}
+  }
+
+  let refMeta = document.querySelector('meta[name="referrer"]');
+  if (!refMeta) {
+    refMeta = document.createElement('meta');
+    refMeta.name = 'referrer';
+    document.head.insertBefore(refMeta, document.head.firstChild);
+  }
+  refMeta.setAttribute('content', 'no-referrer');
+
+  const CFG_KEY = 'magyo_studio_pure_google_tts_v971';
+  const BM_AUTO_KEY = 'magyo_studio_tts_autobm_v93';
+  const SPEED_STEPS = [0.75, 0.9, 1.0, 1.15, 1.25, 1.4, 1.5, 1.75, 2.0];
+
+  let gCfg = {
+    mode: 'GOOGLE_STREAM', // 'GOOGLE_STREAM' | 'LOCAL_GOOGLE'
+    rate: 1.0,
+    autoScroll: true,
+    dockOpen: false
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(CFG_KEY) || 'null');
+    if (saved && typeof saved === 'object') gCfg = Object.assign(gCfg, saved);
+  } catch (e) {}
+
+  function saveGCfg() {
+    try { localStorage.setItem(CFG_KEY, JSON.stringify(gCfg)); } catch (e) {}
+  }
+
+  // 2. 순정 구글 스트림용 영구 단일 <audio> + 다음 문장 무음 프리로더 (끊김 제로)
+  const gAudio = document.createElement('audio');
+  gAudio.id = 'v971GoogleStreamAudio';
+  gAudio.preload = 'auto';
+  gAudio.referrerPolicy = 'no-referrer';
+  gAudio.setAttribute('referrerpolicy', 'no-referrer');
+  gAudio.setAttribute('playsinline', '');
+  gAudio.setAttribute('webkit-playsinline', '');
+  gAudio.style.display = 'none';
+  document.body.appendChild(gAudio);
+
+  const gPreload = document.createElement('audio');
+  gPreload.id = 'v971GooglePreloadAudio';
+  gPreload.preload = 'auto';
+  gPreload.muted = true;
+  gPreload.referrerPolicy = 'no-referrer';
+  gPreload.setAttribute('referrerpolicy', 'no-referrer');
+  gPreload.style.display = 'none';
+  document.body.appendChild(gPreload);
+
+  // 오직 순정 구글 한국어(tl=ko) 엔드포인트 3곳만 사용 (중국 유다오 등 타사 기계음 영구 배제)
+  function buildPureGoogleTtsUrl(text, mirrorIdx) {
+    const q = encodeURIComponent(text);
+    const len = text.length;
+    const m = mirrorIdx % 3;
+    if (m === 0) {
+      return 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=ko&total=1&idx=0&textlen=' + len + '&ttsspeed=1&q=' + q;
+    }
+    if (m === 1) {
+      return 'https://translate.google.com/translate_tts?ie=UTF-8&tl=ko&total=1&idx=0&textlen=' + len + '&client=tw-ob&ttsspeed=1&q=' + q;
+    }
+    return 'https://translate.google.co.kr/translate_tts?ie=UTF-8&tl=ko&total=1&idx=0&textlen=' + len + '&client=tw-ob&ttsspeed=1&q=' + q;
+  }
+
+  // 3. 한글 90자 안전 분할 & 12~16초 세그먼트 패킹 엔진 (구글 100자 제한 통과 + 알림바 5초 유지)
+  const MAX_GOOGLE_CHARS = 90;
+  const MIN_TAIL_CHARS = 42;
+
+  function cleanForGoogleSpeech(str) {
+    return String(str || '')
+      .replace(/^[#*\-\s]+/, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/[“”"‘’']/g, ' ')
+      .replace(/―+/g, ', ')
+      .replace(/(?:…+|\.{2,}|⋯+)/g, ', ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function splitLineToShortUnits(rawLine, isHeader) {
+    const t = String(rawLine || '').trim();
+    if (!t || t === '* * *' || /^[-=*_─━]{3,}$/.test(t)) return [];
+
+    if (isHeader) {
+      const sp = cleanForGoogleSpeech(t).slice(0, MAX_GOOGLE_CHARS);
+      return sp ? [{ raw: t, sp: sp, start: 0, end: rawLine.length }] : [];
+    }
+
+    // 마침표·물음표·느낌표·닫는따옴표 기준으로 1차 문장 분리
+    const primary = [];
+    let s = 0, len = rawLine.length;
+    for (let i = 0; i < len; i++) {
+      const ch = rawLine[i];
+      if (ch === '.' || ch === '!' || ch === '?') {
+        let e = i + 1;
+        while (e < len && /[.!?…⋯”"’')\]]/.test(rawLine[e])) e++;
+        if (e === len || /\s/.test(rawLine[e]) || /[“"‘']/.test(rawLine[e])) {
+          primary.push({ s: s, e: e });
+          i = e - 1;
+          s = e;
+        }
+      }
+    }
+    if (s < len) primary.push({ s: s, e: len });
+
+    // 88자를 넘는 긴 문장은 쉼표·연결어미·공백 위치에서 자연스럽게 2차 분할
+    const units = [];
+    primary.forEach(function(p) {
+      let curS = p.s;
+      while (curS < p.e) {
+        const segRaw = rawLine.slice(curS, p.e);
+        const segClean = cleanForGoogleSpeech(segRaw);
+        if (!segClean) break;
+        if (segClean.length <= 86) {
+          const lead = segRaw.length - segRaw.trimStart().length;
+          const trimSeg = segRaw.trim();
+          units.push({ raw: trimSeg, sp: segClean, start: curS + lead, end: curS + lead + trimSeg.length });
+          break;
+        }
+
+        // 원본 문자열에서 약 78자 안팎의 자연스러운 호흡 끊김점 탐색
+        const lookSlice = rawLine.slice(curS, Math.min(p.e, curS + 84));
+        let cut = lookSlice.lastIndexOf(', ');
+        if (cut < 28) {
+          const connRx = /(?:며|고|자|니|서|뒤|지만|는데)\s+/g;
+          let m;
+          while ((m = connRx.exec(lookSlice)) !== null) {
+            if (m.index >= 28) cut = m.index + m[0].length - 1;
+          }
+        }
+        if (cut < 25) cut = lookSlice.lastIndexOf(' ');
+        if (cut < 20) cut = Math.min(lookSlice.length - 1, 75);
+
+        const piece = rawLine.slice(curS, curS + cut + 1);
+        const pieceSp = cleanForGoogleSpeech(piece);
+        if (pieceSp) {
+          const lead = piece.length - piece.trimStart().length;
+          const trimP = piece.trim();
+          units.push({ raw: trimP, sp: pieceSp.slice(0, MAX_GOOGLE_CHARS), start: curS + lead, end: curS + lead + trimP.length });
+        }
+        curS += cut + 1;
+      }
+    });
+    return units;
+  }
+
+  function makeSegmentFromGroup(grp) {
+    let totalW = 0;
+    grp.forEach(function(it) {
+      it.w = it.sp.length + 3;
+      totalW += it.w;
+    });
+    let acc = 0;
+    grp.forEach(function(it) {
+      it.startRatio = totalW > 0 ? (acc / totalW) : 0;
+      acc += it.w;
+      it.endRatio = totalW > 0 ? (acc / totalW) : 1;
+    });
+    return {
+      epIdx: grp[0].epIdx,
+      epTitle: grp[0].epTitle,
+      items: grp,
+      spoken: grp.map(function(x) { return x.sp; }).join('. ').replace(/\.\s*\./g, '.')
+    };
+  }
+
+  function buildGoogleSegmentsForTab(tab) {
+    if (!tab || !tab.text || !tab.text.trim()) return { segments: [], totalLines: 0 };
+    const lines = tab.text.split('\n');
+    const eps = (tab.episodes && tab.episodes.length)
+      ? tab.episodes
+      : [{ title: '원고 낭독', startLine: 0, hasExplicitHeader: false, lines: lines }];
+
+    const segments = [];
+    eps.forEach(function(ep, epIdx) {
+      const epUnits = [];
+      ep.lines.forEach(function(ln, lIdx) {
+        const gLine = ep.startLine + lIdx;
+        const isHdr = Boolean(lIdx === 0 && ep.hasExplicitHeader);
+        splitLineToShortUnits(ln, isHdr).forEach(function(u, uIdx) {
+          epUnits.push({
+            epIdx: epIdx,
+            epTitle: ep.title || '원고 낭독',
+            lineIdx: gLine,
+            sentIdx: uIdx,
+            raw: u.raw,
+            sp: u.sp,
+            start: u.start,
+            end: u.end
+          });
+        });
+      });
+      if (!epUnits.length) return;
+
+      const groups = [];
+      let curGrp = [];
+      let curJoinedLen = 0;
+
+      epUnits.forEach(function(u) {
+        const addLen = u.sp.length + (curGrp.length > 0 ? 2 : 0);
+        if (curGrp.length > 0 && (curJoinedLen + addLen > MAX_GOOGLE_CHARS)) {
+          groups.push(curGrp);
+          curGrp = [u];
+          curJoinedLen = u.sp.length;
+        } else {
+          curGrp.push(u);
+          curJoinedLen += addLen;
+        }
+      });
+      if (curGrp.length > 0) groups.push(curGrp);
+
+      // 회차 마지막 조각이 너무 짧으면 직전 그룹과 균등 배분해 알림바 5초 조건 유지 + 90자 이내 보장
+      if (groups.length >= 2) {
+        const tail = groups[groups.length - 1];
+        const tailLen = tail.reduce(function(s, x) { return s + x.sp.length + 2; }, -2);
+        if (tailLen < MIN_TAIL_CHARS) {
+          const prev = groups[groups.length - 2];
+          const combined = prev.concat(tail);
+          const combLen = combined.reduce(function(s, x) { return s + x.sp.length + 2; }, -2);
+          if (combLen <= MAX_GOOGLE_CHARS) {
+            groups.splice(groups.length - 2, 2, combined);
+          } else if (combined.length >= 2) {
+            const half = combLen / 2;
+            const gA = [], gB = [];
+            let sumA = 0;
+            combined.forEach(function(x, idx) {
+              const nextSum = sumA + (gA.length ? 2 : 0) + x.sp.length;
+              if ((gA.length === 0 || (sumA < half && nextSum <= MAX_GOOGLE_CHARS)) && idx < combined.length - 1) {
+                gA.push(x);
+                sumA = nextSum;
+              } else {
+                gB.push(x);
+              }
+            });
+            const sumB = gB.reduce(function(s, x) { return s + x.sp.length + 2; }, -2);
+            if (gA.length && gB.length && sumA <= MAX_GOOGLE_CHARS && sumB <= MAX_GOOGLE_CHARS) {
+              groups.splice(groups.length - 2, 2, gA, gB);
+            }
+          }
+        }
+      }
+
+      groups.forEach(function(g) { segments.push(makeSegmentFromGroup(g)); });
+    });
+
+    return { segments: segments, totalLines: lines.length };
+  }
+
+  // 4. 실시간 문단 하이라이트 · 이어듣기 저장 · 알림바(MediaSession) 연동
+  let state = {
+    playing: false,
+    paused: false,
+    tabName: '',
+    textLen: -1,
+    totalLines: 0,
+    segments: [],
+    segIdx: 0,
+    itemIdx: 0,
+    lineIdx: 0,
+    mirror: 0,
+    pre
+
 </body>
 </html>
