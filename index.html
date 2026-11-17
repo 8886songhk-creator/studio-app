@@ -3630,6 +3630,1738 @@
 })();
 </script>
 <!-- ===== [/최상단 바 통합 좌우 롤링 + 2차 패턴 레이더 접기/펼치기 끝] ===== -->
+
+<!-- ===== [구글 드라이브 .txt 원본 & 스튜디오 클라우드 자동 반영 통합 패치] ===== -->
+<script id="studioDriveCloudAutoSyncV1">
+(function() {
+  if (window.__STUDIO_DRIVE_CLOUD_AUTOSYNC_V1) return;
+  window.__STUDIO_DRIVE_CLOUD_AUTOSYNC_V1 = true;
+
+  var CFG_KEY = 'magyo_cloud_cfg_v1';
+  var V95_KEY = 'magyo_studio_v95_drive_cfg';
+  var BM_KEY = 'magyo_studio_tts_autobm_v93';
+  var META_KEY = 'studio_autosync_meta_v1'; // applySyncStorage 덮어쓰기 방지용 기기 고유 키
+  var EXCLUDE_SYNC_KEYS = {
+    'magyo_studio_view_mode_v81': true,
+    'magyo_unified_prefs_v81': true,
+    'magyo_cloud_cfg_v1': true
+  };
+
+  var syncBusy = false;
+  var bypassPreSaveOnce = false;
+  var lastAutoSyncAt = 0;
+
+  function normText(s) {
+    return String(s || '').replace(/\r\n/g, '\n');
+  }
+
+  function hashText(s) {
+    var str = normText(s);
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(36) + '_' + str.length;
+  }
+
+  function normFileKey(name, stripCopyNum) {
+    var s = String(name || '').trim();
+    try { s = s.normalize('NFC'); } catch (e) {}
+    s = s.replace(/\.(txt|md)$/i, '').trim().toLowerCase();
+    if (stripCopyNum) s = s.replace(/\s*\(\d+\)$/, '').trim();
+    return s;
+  }
+
+  function b64ToUtf8(b64) {
+    var clean = String(b64 || '').replace(/\s+/g, '');
+    var bin = atob(clean);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  function parseGasKstDateMs(str) {
+    if (!str) return 0;
+    var m = String(str).trim().match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+    if (!m) return 0;
+    var now = new Date();
+    var kstNow = new Date(now.getTime() + 9 * 3600 * 1000);
+    var year = kstNow.getUTCFullYear();
+    var ms = Date.parse(year + '-' + m[1] + '-' + m[2] + 'T' + m[3] + ':' + m[4] + ':59+09:00');
+    if (ms > now.getTime() + 2 * 86400 * 1000) {
+      ms = Date.parse((year - 1) + '-' + m[1] + '-' + m[2] + 'T' + m[3] + ':' + m[4] + ':59+09:00');
+    }
+    return isNaN(ms) ? 0 : ms;
+  }
+
+  function loadMeta() {
+    try {
+      var m = JSON.parse(localStorage.getItem(META_KEY) || 'null');
+      if (m && typeof m === 'object') {
+        if (!m.tabs || typeof m.tabs !== 'object') m.tabs = {};
+        return m;
+      }
+    } catch (e) {}
+    return { lastVaultSha: '', lastVaultCommitMs: 0, bridgeVersion: 1, tabs: {} };
+  }
+
+  function saveMeta(m) {
+    try { localStorage.setItem(META_KEY, JSON.stringify(m)); } catch (e) {}
+  }
+
+  function setBarInfo(text, state) {
+    var txtEl = document.getElementById('cloudStatusText');
+    var dotEl = document.getElementById('cloudDot');
+    if (txtEl && text) txtEl.textContent = text;
+    if (dotEl) {
+      dotEl.className = 'c-dot' + (state === 'syncing' ? ' syncing' : (state === 'error' ? ' error' : ''));
+    }
+  }
+
+  function getCloudCfg() {
+    try {
+      var c = JSON.parse(localStorage.getItem(CFG_KEY) || 'null');
+      return (c && c.token && c.owner && c.vault) ? c : null;
+    } catch (e) { return null; }
+  }
+
+  function getDriveCfg() {
+    try {
+      var d = JSON.parse(localStorage.getItem(V95_KEY) || 'null');
+      return (d && d.gasUrl && String(d.gasUrl).trim()) ? d : null;
+    } catch (e) { return null; }
+  }
+
+  function getStudioWin() {
+    var ifr = Document.prototype.getElementById.call(document, 'studioFrame');
+    return (ifr && ifr.contentWindow) ? ifr.contentWindow : null;
+  }
+
+  async function ghGet(path, token) {
+    var res = await fetch('https://api.github.com' + path, {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Accept': 'application/vnd.github+json'
+      },
+      cache: 'no-store'
+    });
+    var txt = await res.text();
+    var data = null;
+    if (txt) { try { data = JSON.parse(txt); } catch (e) { data = { message: txt }; } }
+    if (!res.ok) throw new Error((data && data.message) ? data.message : ('HTTP ' + res.status));
+    return data;
+  }
+
+  async function callDriveGas(dCfg, payload) {
+    var res = await fetch(String(dCfg.gasUrl).trim(), {
+      method: 'POST',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({
+        key: dCfg.secretKey || '',
+        folderName: dCfg.folderName || '마교_퇴고스튜디오_원고함'
+      }, payload))
+    });
+    var j = await res.json();
+    if (!j || !j.ok) throw new Error((j && j.error) || '구글 드라이브 응답 오류');
+    return j;
+  }
+
+  // 전체 드라이브 검색 및 밀리초 수정시각을 지원하는 v2 브릿지 스크립트 생성기
+  function buildGasV2Script(folderName, secretKey) {
+    return [
+      'const DEFAULT_FOLDER=' + JSON.stringify(folderName || '마교_퇴고스튜디오_원고함') + ',SECRET_KEY=' + JSON.stringify(secretKey || '') + ';',
+      'function getFolder(n){const i=DriveApp.getFoldersByName(n);return i.hasNext()?i.next():DriveApp.createFolder(n);}',
+      'function out(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);}',
+      'function toMeta(x,g){const d=x.getLastUpdated();return{id:x.getId(),name:x.getName(),size:x.getSize(),modifiedMs:d.getTime(),updatedAt:Utilities.formatDate(d,"Asia/Seoul","MM-dd HH:mm"),fromGlobalDrive:Boolean(g)};}',
+      'function doPost(e){try{const d=JSON.parse(e.postData.contents||"{}");if(SECRET_KEY&&d.key!==SECRET_KEY)return out({ok:false,error:"보안키 불일치"});',
+      'const fd=getFolder(d.folderName||DEFAULT_FOLDER),a=d.action||"save";',
+      'if(a==="ping")return out({ok:true,bridgeVersion:2,folderName:fd.getName(),folderUrl:fd.getUrl()});',
+      'if(a==="list"){const fs=fd.getFiles(),l=[],seen={};while(fs.hasNext()&&l.length<100){const x=fs.next();if(!x.isTrashed()){l.push(toMeta(x,false));seen[x.getName().toLowerCase()]=true;}}',
+      'if(Array.isArray(d.wantGlobalTabs)){d.wantGlobalTabs.forEach(function(raw){const base=String(raw||"").trim();if(!base)return;const cands=/\\.(txt|md)$/i.test(base)?[base]:[base,base+".txt"];',
+      'cands.forEach(function(nm){if(seen[nm.toLowerCase()])return;const it=DriveApp.getFilesByName(nm);let best=null,bMs=0;while(it.hasNext()){const f=it.next();if(!f.isTrashed()){const ms=f.getLastUpdated().getTime();if(ms>bMs){bMs=ms;best=f;}}}if(best){l.push(toMeta(best,true));seen[best.getName().toLowerCase()]=true;}});});}',
+      'return out({ok:true,bridgeVersion:2,files:l,folderUrl:fd.getUrl()});}',
+      'if(a==="read"){const x=DriveApp.getFileById(d.fileId),dt=x.getLastUpdated();return out({ok:true,bridgeVersion:2,id:x.getId(),name:x.getName(),size:x.getSize(),modifiedMs:dt.getTime(),content:x.getBlob().getDataAsString("UTF-8")});}',
+      'let x=null,u=false;if(d.fileId){try{const byId=DriveApp.getFileById(d.fileId);if(!byId.isTrashed()){x=byId;x.setContent(d.content||"");u=true;}}catch(err){}}',
+      'if(!x){const ex=fd.getFilesByName(d.fileName||"원고.txt");if(ex.hasNext()){x=ex.next();x.setContent(d.content||"");u=true;}else{x=fd.createFile(d.fileName||"원고.txt",d.content||"",MimeType.PLAIN_TEXT);}}',
+      'const nd=x.getLastUpdated();return out({ok:true,bridgeVersion:2,updated:u,id:x.getId(),fileName:x.getName(),size:x.getSize(),modifiedMs:nd.getTime(),folderUrl:fd.getUrl(),updatedAt:Utilities.formatDate(nd,"Asia/Seoul","HH:mm:ss")});',
+      '}catch(err){return out({ok:false,error:String(err)});}}'
+    ].join('\n');
+  }
+
+  // 내부 #studioFrame 에 헬퍼 주입 (let 스코프의 fileTabs 직접 제어 + 책갈피 재고정)
+  function ensureInnerStudioHelper(sw) {
+    if (!sw || !sw.document || !sw.document.body) return false;
+    if (sw.__autoSyncInner && sw.__autoSyncInner.ready) return true;
+
+    var helperCode = [
+      '(function(){',
+      '  if (window.__autoSyncInner && window.__autoSyncInner.ready) return;',
+      '  var lastTypeAt = 0;',
+      '  document.addEventListener("input", function(e) {',
+      '    var t = e && e.target;',
+      '    if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) lastTypeAt = Date.now();',
+      '  }, true);',
+      '  document.addEventListener("change", function(e) {',
+      '    var t = e && e.target;',
+      '    if (t && t.tagName === "INPUT" && t.type === "file" && t.id !== "v97MasterBackupInput") {',
+      '      setTimeout(function() {',
+      '        if (window.parent && typeof window.parent.__onStudioTxtFileOpened === "function") {',
+      '          window.parent.__onStudioTxtFileOpened();',
+      '        }',
+      '      }, 750);',
+      '    }',
+      '  }, true);',
+      '  if (typeof window.v95CopyGasScript === "function" && window.parent && window.parent.__buildGasV2Script) {',
+      '    window.v95CopyGasScript = function() {',
+      '      var kEl = document.getElementById("v95SecretKeyInput");',
+      '      var fEl = document.getElementById("v95FolderNameInput");',
+      '      var cfg = {}; try { cfg = JSON.parse(localStorage.getItem("magyo_studio_v95_drive_cfg") || "{}"); } catch(e){}',
+      '      var k = (kEl && kEl.value.trim()) || cfg.secretKey || "";',
+      '      var f = (fEl && fEl.value.trim()) || cfg.folderName || "마교_퇴고스튜디오_원고함";',
+      '      var code = window.parent.__buildGasV2Script(f, k);',
+      '      if (typeof copyTextToClipboard === "function") copyTextToClipboard(code, "📋 전체 드라이브 자동동기화(v2) 브릿지 스크립트 복사 완료!");',
+      '      else if (navigator.clipboard) navigator.clipboard.writeText(code);',
+      '    };',
+      '  }',
+      '  function reanchorBookmark(tabName, newText) {',
+      '    try {',
+      '      var bms = JSON.parse(localStorage.getItem("magyo_studio_tts_autobm_v93") || "{}") || {};',
+      '      var bm = bms[tabName];',
+      '      if (!bm || typeof bm.lineIdx !== "number") return null;',
+      '      var lines = String(newText || "").split("\\n");',
+      '      if (!lines.length) return bm;',
+      '      var snip = String(bm.snippet || "").trim().slice(0, 24);',
+      '      var foundIdx = Math.min(bm.lineIdx, lines.length - 1);',
+      '      if (snip.length >= 6 && (!lines[foundIdx] || lines[foundIdx].indexOf(snip) === -1)) {',
+      '        var maxDist = lines.length;',
+      '        for (var d = 1; d < maxDist; d++) {',
+      '          var up = bm.lineIdx - d, dn = bm.lineIdx + d;',
+      '          if (dn < lines.length && lines[dn].indexOf(snip) !== -1) { foundIdx = dn; break; }',
+      '          if (up >= 0 && lines[up].indexOf(snip) !== -1) { foundIdx = up; break; }',
+      '        }',
+      '      }',
+      '      bm.lineIdx = foundIdx;',
+      '      bm.pct = Math.round(((foundIdx + 1) / lines.length) * 100);',
+      '      bms[tabName] = bm;',
+      '      if (bms.__LAST__ && bms.__LAST__.fileName === tabName) bms.__LAST__ = Object.assign({}, bm);',
+      '      localStorage.setItem("magyo_studio_tts_autobm_v93", JSON.stringify(bms));',
+      '      return bm;',
+      '    } catch (e) { return null; }',
+      '  }',
+      '  window.__autoSyncInner = {',
+      '    ready: true,',
+      '    isBusyEditing: function() {',
+      '      if (typeof activeEditingLineIdx !== "undefined" && activeEditingLineIdx !== null) return true;',
+      '      var ae = document.activeElement;',
+      '      if (ae && (ae.id === "masterText" || (ae.classList && ae.classList.contains("card-edit-input"))) && (Date.now() - lastTypeAt < 4500)) return true;',
+      '      return false;',
+      '    },',
+      '    getSnapshot: function() {',
+      '      if (typeof fileTabs === "undefined" || !Array.isArray(fileTabs)) return { activeTabIdx: 0, tabs: [] };',
+      '      var mTa = document.getElementById("masterText");',
+      '      var aIdx = typeof activeTabIdx === "number" ? activeTabIdx : 0;',
+      '      if (mTa && document.activeElement === mTa && fileTabs[aIdx]) fileTabs[aIdx].text = mTa.value;',
+      '      return {',
+      '        activeTabIdx: aIdx,',
+      '        tabs: fileTabs.map(function(t, idx) {',
+      '          return { idx: idx, id: t.id, name: t.name || ("원고_" + (idx + 1) + ".txt"), text: String(t.text || "").replace(/\\r\\n/g, "\\n"), hadCrlf: t.hadCrlf !== false, hasHandle: Boolean(t.handle && typeof t.handle.getFile === "function") };',
+      '        })',
+      '      };',
+      '    },',
+      '    readLocalHandleUpdates: async function(tabHashes) {',
+      '      var out = [];',
+      '      if (typeof fileTabs === "undefined" || !Array.isArray(fileTabs)) return out;',
+      '      for (var i = 0; i < fileTabs.length; i++) {',
+      '        var t = fileTabs[i];',
+      '        if (!t || !t.handle || typeof t.handle.getFile !== "function") continue;',
+      '        try {',
+      '          var f = await t.handle.getFile();',
+      '          var txt = String(await f.text()).replace(/\\r\\n/g, "\\n");',
+      '          out.push({ idx: i, name: t.name, text: txt, lastModified: f.lastModified || 0 });',
+      '        } catch (e) {}',
+      '      }',
+      '      return out;',
+      '    },',
+      '    applyUpdates: function(updates) {',
+      '      if (!Array.isArray(updates) || !updates.length || typeof fileTabs === "undefined") return;',
+      '      var aIdx = typeof activeTabIdx === "number" ? activeTabIdx : 0;',
+      '      var nTtsPlaying = Boolean(window.__nTts && window.__nTts.playing && !window.__nTts.paused);',
+      '      var touchedActive = false, addedNew = false;',
+      '      updates.forEach(function(u) {',
+      '        var clean = String(u.text || "").replace(/\\r\\n/g, "\\n");',
+      '        if (u.isNewTab) {',
+      '          fileTabs.push({ id: u.id || ("tab_" + Date.now()), name: u.name || "원고.txt", text: clean, handle: null, hadCrlf: u.hadCrlf !== false, undoStack: [], episodes: [], totalIssues: 0, totalMeta: 0 });',
+      '          addedNew = true;',
+      '          return;',
+      '        }',
+      '        var tab = fileTabs[u.idx];',
+      '        if (!tab) return;',
+      '        reanchorBookmark(tab.name, clean);',
+      '        if (typeof pushUndo === "function") { try { pushUndo(tab); } catch (e) {} }',
+      '        tab.text = clean;',
+      '        if (u.idx === aIdx) touchedActive = true;',
+      '      });',
+      '      var mTa = document.getElementById("masterText");',
+      '      if (mTa && fileTabs[aIdx]) mTa.value = fileTabs[aIdx].text;',
+      '      if (window.__nTts) window.__nTts.sig = "";',
+      '      if (updates.length === 1 && !addedNew && typeof analyzeSingleTabOnly === "function" && fileTabs[updates[0].idx]) {',
+      '        analyzeSingleTabOnly(fileTabs[updates[0].idx], true);',
+      '      } else if (typeof analyzeAllTabs === "function") {',
+      '        analyzeAllTabs(true);',
+      '      }',
+      '      if (typeof renderFileTabBar === "function") renderFileTabBar();',
+      '      if (touchedActive && nTtsPlaying && typeof window.v93TtsPlay === "function") {',
+      '        try {',
+      '          var bms = JSON.parse(localStorage.getItem("magyo_studio_tts_autobm_v93") || "{}");',
+      '          var bm = bms[fileTabs[aIdx].name];',
+      '          window.v93TtsPlay(bm ? bm.lineIdx : 0, bm ? (bm.sentIdx || 0) : 0);',
+      '        } catch (e) {}',
+      '      }',
+      '    },',
+      '    toast: function(msg) {',
+      '      if (typeof showToast === "function") showToast(msg);',
+      '    }',
+      '  };',
+      '})();'
+    ].join('\n');
+
+    var sc = sw.document.createElement('script');
+    sc.id = 'magyoAutoSyncInnerHelper';
+    sc.textContent = helperCode;
+    sw.document.body.appendChild(sc);
+    return Boolean(sw.__autoSyncInner && sw.__autoSyncInner.ready);
+  }
+
+  window.__buildGasV2Script = buildGasV2Script;
+  if (typeof window.v95CopyGasScript === 'function') {
+    window.v95CopyGasScript = function() {
+      var dCfg = getDriveCfg() || {};
+      var kEl = document.getElementById('v95SecretKeyInput');
+      var fEl = document.getElementById('v95FolderNameInput');
+      var code = buildGasV2Script((fEl && fEl.value.trim()) || dCfg.folderName, (kEl && kEl.value.trim()) || dCfg.secretKey);
+      if (navigator.clipboard) navigator.clipboard.writeText(code).catch(function() {});
+      alert('전체 드라이브 자동동기화(v2) 브릿지 스크립트가 복사되었습니다.');
+    };
+  }
+
+  function applyRemoteStorageSafely(storageObj, keepLocalBookmarks) {
+    if (!storageObj || typeof storageObj !== 'object') return;
+    var localBm = localStorage.getItem(BM_KEY);
+    Object.keys(storageObj).forEach(function(k) {
+      if (k.indexOf('magyo_') === 0 && !EXCLUDE_SYNC_KEYS[k] && typeof storageObj[k] === 'string') {
+        if (keepLocalBookmarks && k === BM_KEY && localBm) return;
+        localStorage.setItem(k, storageObj[k]);
+      }
+    });
+  }
+
+  // 통합 동기화 엔진 (GitHub 클라우드 + 로컬 파일 핸들 + 구글 드라이브 .txt 원본)
+  async function runUnifiedSync(opts) {
+    var o = opts || {};
+    if (syncBusy) return false;
+    var sw = getStudioWin();
+    if (!sw || !ensureInnerStudioHelper(sw)) return false;
+    if (!o.manual && !o.preSave && sw.__autoSyncInner.isBusyEditing()) return false;
+
+    syncBusy = true;
+    lastAutoSyncAt = Date.now();
+    if (o.manual) setBarInfo('클라우드·드라이브 최신 원고 확인 중...', 'syncing');
+
+    var updatedNames = [];
+    var updatedFromDriveOrHandle = false;
+
+    try {
+      var meta = loadMeta();
+      var snap = sw.__autoSyncInner.getSnapshot();
+      var curTabs = snap.tabs || [];
+      var queuedByIdx = {};
+      var newTabsToAdd = [];
+
+      // 1단계: GitHub 스튜디오 클라우드(workspace.json) 변경 감지
+      var cCfg = getCloudCfg();
+      if (cCfg) {
+        try {
+          var ref = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/ref/heads/' + cCfg.branch, cCfg.token);
+          var remoteSha = ref && ref.object ? ref.object.sha : '';
+          if (remoteSha && remoteSha !== meta.lastVaultSha) {
+            var commit = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/commits/' + remoteSha, cCfg.token);
+            var commitMs = (commit && commit.committer && commit.committer.date) ? Date.parse(commit.committer.date) : Date.now();
+            if (meta.lastVaultSha) {
+              var tree = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/trees/' + commit.tree.sha, cCfg.token);
+              var wsSha = null;
+              (tree.tree || []).forEach(function(it) { if (it.path === 'workspace.json') wsSha = it.sha; });
+              if (wsSha) {
+                var wBlob = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/blobs/' + wsSha, cCfg.token);
+                var remoteWs = JSON.parse(b64ToUtf8(wBlob.content));
+                if (remoteWs && remoteWs.storage) {
+                  applyRemoteStorageSafely(remoteWs.storage, Boolean(o.preSave));
+                }
+                if (remoteWs && Array.isArray(remoteWs.tabs)) {
+                  remoteWs.tabs.forEach(function(rt) {
+                    var rKey = normFileKey(rt.name, false);
+                    var rText = normText(rt.text);
+                    var rHash = hashText(rText);
+                    var matchLocal = null;
+                    for (var i = 0; i < curTabs.length; i++) {
+                      if (curTabs[i].id === rt.id || normFileKey(curTabs[i].name, false) === rKey) { matchLocal = curTabs[i]; break; }
+                    }
+                    if (!matchLocal) {
+                      newTabsToAdd.push({ isNewTab: true, id: rt.id, name: rt.name, text: rText, hadCrlf: rt.hadCrlf });
+                      meta.tabs[rKey] = Object.assign(meta.tabs[rKey] || {}, { vaultBaseHash: rHash, fileName: rt.name });
+                      updatedNames.push(rt.name + '(서버)');
+                      return;
+                    }
+                    var cHash = hashText(matchLocal.text);
+                    var tMeta = meta.tabs[rKey] || {};
+                    if (rHash !== cHash) {
+                      var localUnchanged = !tMeta.vaultBaseHash || (cHash === tMeta.vaultBaseHash);
+                      if (localUnchanged || (!o.preSave && confirm('[' + matchLocal.name + '] 다른 기기에서 저장된 서버 최신본이 있습니다.\n최신 본문으로 교체할까요?'))) {
+                        queuedByIdx[matchLocal.idx] = { idx: matchLocal.idx, name: matchLocal.name, text: rText };
+                        updatedNames.push(matchLocal.name + '(서버)');
+                      }
+                    }
+                    meta.tabs[rKey] = Object.assign(tMeta, { vaultBaseHash: rHash, fileName: matchLocal.name });
+                  });
+                }
+              }
+            } else {
+              curTabs.forEach(function(ct) {
+                var k = normFileKey(ct.name, false);
+                meta.tabs[k] = Object.assign(meta.tabs[k] || {}, { vaultBaseHash: hashText(ct.text), fileName: ct.name });
+              });
+            }
+            meta.lastVaultSha = remoteSha;
+            meta.lastVaultCommitMs = isNaN(commitMs) ? Date.now() : commitMs;
+          }
+        } catch (ghErr) {
+          if (o.manual) console.warn('Vault sync check error:', ghErr);
+        }
+      }
+
+      // 2단계: PC 로컬 [텍스트 열기] 파일 핸들 변경 감지 (구글 드라이브 데스크톱 폴더 등)
+      var handleList = await sw.__autoSyncInner.readLocalHandleUpdates();
+      handleList.forEach(function(hl) {
+        var ct = curTabs[hl.idx];
+        if (!ct) return;
+        var k = normFileKey(ct.name, false);
+        var tMeta = meta.tabs[k] || {};
+        var hHash = hashText(hl.text);
+        var effText = queuedByIdx[ct.idx] ? queuedByIdx[ct.idx].text : ct.text;
+        var cHash = hashText(effText);
+        if (hHash !== cHash && (!tMeta.handleBaseHash || (hHash !== tMeta.handleBaseHash && cHash === tMeta.handleBaseHash))) {
+          queuedByIdx[ct.idx] = { idx: ct.idx, name: ct.name, text: hl.text };
+          updatedNames.push(ct.name + '(로컬원본)');
+          updatedFromDriveOrHandle = true;
+        }
+        meta.tabs[k] = Object.assign(tMeta, { handleBaseHash: hHash, fileName: ct.name });
+      });
+
+      // 3단계: 구글 드라이브 .txt 원본 직접 수정 감지 ([텍스트 열기] 탭 포함 자동 매칭)
+      var dCfg = getDriveCfg();
+      if (dCfg && curTabs.length > 0) {
+        var wantNames = curTabs.map(function(t) { return t.name; });
+        var listRes = await callDriveGas(dCfg, { action: 'list', wantGlobalTabs: wantNames });
+        if (listRes.bridgeVersion) meta.bridgeVersion = listRes.bridgeVersion;
+        var dFiles = Array.isArray(listRes.files) ? listRes.files : [];
+
+        for (var ti = 0; ti < curTabs.length; ti++) {
+          var tab = curTabs[ti];
+          var exactKey = normFileKey(tab.name, false);
+          var looseKey = normFileKey(tab.name, true);
+          var tMeta = meta.tabs[exactKey] || {};
+
+          var matchedFile = null;
+          if (tMeta.driveFileId) {
+            for (var fi = 0; fi < dFiles.length; fi++) {
+              if (dFiles[fi].id === tMeta.driveFileId) { matchedFile = dFiles[fi]; break; }
+            }
+          }
+          if (!matchedFile) {
+            for (var fi2 = 0; fi2 < dFiles.length; fi2++) {
+              if (normFileKey(dFiles[fi2].name, false) === exactKey) { matchedFile = dFiles[fi2]; break; }
+            }
+          }
+          if (!matchedFile && looseKey !== exactKey) {
+            for (var fi3 = 0; fi3 < dFiles.length; fi3++) {
+              if (normFileKey(dFiles[fi3].name, true) === looseKey) { matchedFile = dFiles[fi3]; break; }
+            }
+          }
+          if (!matchedFile) continue;
+
+          var dSig = String(matchedFile.modifiedMs || matchedFile.updatedAt || '') + '|' + String(matchedFile.size || 0);
+          var needRead = o.manual || !tMeta.driveBaseHash || (dSig !== tMeta.driveSig) ||
+                         (!matchedFile.modifiedMs && ti === snap.activeTabIdx);
+          if (!needRead) continue;
+
+          var readRes = await callDriveGas(dCfg, { action: 'read', fileId: matchedFile.id });
+          var dText = normText(readRes.content || '');
+          var dHash = hashText(dText);
+          var curEffText = queuedByIdx[tab.idx] ? queuedByIdx[tab.idx].text : tab.text;
+          var cHash2 = hashText(curEffText);
+          if (readRes.modifiedMs) dSig = String(readRes.modifiedMs) + '|' + String(readRes.size || matchedFile.size || 0);
+
+          if (dHash === cHash2) {
+            meta.tabs[exactKey] = Object.assign(tMeta, {
+              driveFileId: matchedFile.id,
+              driveSig: dSig,
+              driveBaseHash: dHash,
+              fileName: matchedFile.name
+            });
+            continue;
+          }
+
+          var applyDrive = false;
+          if (tMeta.driveBaseHash) {
+            if (dHash !== tMeta.driveBaseHash && cHash2 === tMeta.driveBaseHash) {
+              // 드라이브 원본만 외부에서 수정됨 -> 즉시 자동 반영
+              applyDrive = true;
+            } else if (dHash !== tMeta.driveBaseHash && cHash2 !== tMeta.driveBaseHash && !o.preSave) {
+              applyDrive = confirm('[' + tab.name + '] 구글 드라이브 원본과 앱 본문이 모두 변경되었습니다.\n구글 드라이브 최신 수정본으로 교체할까요? (이전 본문은 실행취소에 보관됩니다)');
+            }
+          } else {
+            // 최초 연결 시: 드라이브 수정시각이 서버 저장시각보다 최신이면 자동 반영
+            var dMs = readRes.modifiedMs || matchedFile.modifiedMs || parseGasKstDateMs(matchedFile.updatedAt);
+            if (!curEffText.trim() || (dMs > 0 && (!meta.lastVaultCommitMs || dMs >= meta.lastVaultCommitMs - 60000))) {
+              applyDrive = true;
+            } else if (!o.preSave) {
+              applyDrive = confirm('[' + tab.name + '] 구글 드라이브에 연동된 동명 파일과 내용이 다릅니다.\n• 확인: 구글 드라이브 파일 내용으로 앱 본문 교체\n• 취소: 현재 앱 본문 유지');
+            }
+          }
+
+          if (applyDrive) {
+            queuedByIdx[tab.idx] = { idx: tab.idx, name: tab.name, text: dText };
+            meta.tabs[exactKey] = Object.assign(tMeta, {
+              driveFileId: matchedFile.id,
+              driveSig: dSig,
+              driveBaseHash: dHash,
+              vaultBaseHash: dHash,
+              fileName: matchedFile.name
+            });
+            updatedNames.push(tab.name + '(드라이브)');
+            updatedFromDriveOrHandle = true;
+          } else {
+            meta.tabs[exactKey] = Object.assign(tMeta, {
+              driveFileId: matchedFile.id,
+              driveSig: dSig,
+              driveBaseHash: tMeta.driveBaseHash || dHash,
+              fileName: matchedFile.name
+            });
+          }
+        }
+      } else if (o.manual && !dCfg && !cCfg) {
+        if (typeof sw.v95OpenDriveModal === 'function') sw.v95OpenDriveModal();
+      }
+
+      // 4단계: 변경된 원고 본문 즉시 핫스왑 반영 및 클라우드 서버 백업 일치화
+      var finalUpdates = Object.keys(queuedByIdx).map(function(k) { return queuedByIdx[k]; }).concat(newTabsToAdd);
+      if (finalUpdates.length > 0) {
+        sw.__autoSyncInner.applyUpdates(finalUpdates);
+        saveMeta(meta);
+        var nowStr = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+        setBarInfo('자동 반영됨 (' + nowStr + ')', 'ok');
+        sw.__autoSyncInner.toast('🔄 최신 원고 자동 반영 완료: ' + updatedNames.join(', '));
+
+        if (updatedFromDriveOrHandle && cCfg && typeof origSaveToCloud === 'function' && !o.preSave) {
+          bypassPreSaveOnce = true;
+          try { await origSaveToCloud(true); } catch (e) {} finally { bypassPreSaveOnce = false; }
+          await refreshVaultShaAfterSave();
+        }
+        return true;
+      }
+
+      saveMeta(meta);
+      if (o.manual) {
+        var tStr = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+        setBarInfo('최신 상태 확인됨 (' + tStr + ')', 'ok');
+        sw.__autoSyncInner.toast('✅ 스튜디오 클라우드 및 구글 드라이브 원고가 모두 최신 상태입니다.');
+      }
+      return false;
+    } catch (err) {
+      if (o.manual) {
+        setBarInfo('동기화 오류: ' + err.message, 'error');
+        if (sw && sw.__autoSyncInner) sw.__autoSyncInner.toast('⚠️ 동기화 확인 실패: ' + err.message);
+      }
+      return false;
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  async function refreshVaultShaAfterSave() {
+    var cCfg = getCloudCfg();
+    var sw = getStudioWin();
+    if (!cCfg) return;
+    try {
+      var ref = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/ref/heads/' + cCfg.branch, cCfg.token);
+      var meta = loadMeta();
+      if (ref && ref.object && ref.object.sha) {
+        meta.lastVaultSha = ref.object.sha;
+        meta.lastVaultCommitMs = Date.now();
+      }
+      if (sw && ensureInnerStudioHelper(sw)) {
+        var snap = sw.__autoSyncInner.getSnapshot();
+        (snap.tabs || []).forEach(function(t) {
+          var k = normFileKey(t.name, false);
+          meta.tabs[k] = Object.assign(meta.tabs[k] || {}, { vaultBaseHash: hashText(t.text), fileName: t.name });
+        });
+      }
+      saveMeta(meta);
+    } catch (e) {}
+  }
+
+  // 스튜디오에서 수정 후 저장 시 연결된 구글 드라이브 .txt 원본에도 역방향 반영
+  async function pushEditedTabsToDrive(silent) {
+    var dCfg = getDriveCfg();
+    if (!dCfg || dCfg.autoSyncOnSave === false) return;
+    var sw = getStudioWin();
+    if (!sw || !ensureInnerStudioHelper(sw)) return;
+
+    var meta = loadMeta();
+    var snap = sw.__autoSyncInner.getSnapshot();
+    var changed = false;
+
+    for (var i = 0; i < snap.tabs.length; i++) {
+      var t = snap.tabs[i];
+      var k = normFileKey(t.name, false);
+      var tMeta = meta.tabs[k];
+      if (!tMeta || !tMeta.driveFileId) continue;
+      var cHash = hashText(t.text);
+      if (cHash === tMeta.driveBaseHash) continue;
+
+      try {
+        var fName = /\.(txt|md)$/i.test(t.name) ? t.name : (t.name + '.txt');
+        var bodyText = t.hadCrlf ? t.text.replace(/\n/g, '\r\n') : t.text;
+        var savePayload = { action: 'save', fileName: fName, content: bodyText };
+        if (meta.bridgeVersion >= 2) savePayload.fileId = tMeta.driveFileId;
+        var res = await callDriveGas(dCfg, savePayload);
+        var newSig = (res.modifiedMs ? String(res.modifiedMs) : String(tMeta.driveSig || '').split('|')[0]) + '|' + String(res.size || bodyText.length);
+        tMeta.driveBaseHash = cHash;
+        if (res.modifiedMs) tMeta.driveSig = newSig;
+        if (res.id) tMeta.driveFileId = res.id;
+        changed = true;
+      } catch (e) {
+        if (!silent && sw.__autoSyncInner) sw.__autoSyncInner.toast('⚠️ 드라이브 저장 실패(' + t.name + '): ' + e.message);
+      }
+    }
+    if (changed) saveMeta(meta);
+  }
+
+  // 기존 저장·불러오기 함수 래핑 (자동 저장 덮어쓰기 방지 포함)
+  var origSaveToCloud = window.saveToCloudFromStudio;
+  if (typeof origSaveToCloud === 'function') {
+    window.saveToCloudFromStudio = async function(silent) {
+      if (!bypassPreSaveOnce) {
+        await runUnifiedSync({ preSave: true, manual: false, reason: 'pre_save' });
+      }
+      var res = await origSaveToCloud.apply(this, arguments);
+      await refreshVaultShaAfterSave();
+      await pushEditedTabsToDrive(Boolean(silent));
+      return res;
+    };
+  }
+
+  window.saveToCloudSilent = function() {
+    if (typeof window.saveToCloudFromStudio === 'function') {
+      window.saveToCloudFromStudio(true);
+    }
+  };
+
+  var origPullFromCloud = window.pullFromCloudNow;
+  window.pullFromCloudNow = async function() {
+    var sw = getStudioWin();
+    if (sw && ensureInnerStudioHelper(sw)) {
+      await runUnifiedSync({ manual: true, reason: 'pull_btn' });
+    } else if (typeof origPullFromCloud === 'function') {
+      await origPullFromCloud.apply(this, arguments);
+    }
+  };
+
+  window.syncDriveAndCloudNow = function() {
+    runUnifiedSync({ manual: true, reason: 'sync_btn' });
+  };
+
+  window.__onStudioTxtFileOpened = function() {
+    runUnifiedSync({ manual: false, reason: 'txt_opened' });
+  };
+
+  // 상단 클라우드 바에 [🔄 드라이브동기화] 원터치 버튼 추가
+  function mountTopSyncButton() {
+    var barRight = document.querySelector('#cloudBar .cbar-right');
+    if (!barRight || document.getElementById('btnDriveAutoSyncNow')) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'btnDriveAutoSyncNow';
+    btn.className = 'c-btn';
+    btn.style.borderColor = '#14b8a6';
+    btn.style.color = '#5eead4';
+    btn.textContent = '🔄 원고동기화';
+    btn.title = '구글 드라이브 원본(.txt) 및 스튜디오 클라우드의 최신 수정 내용을 즉시 반영합니다';
+    btn.onclick = function() { window.syncDriveAndCloudNow(); };
+    barRight.insertBefore(btn, barRight.firstChild);
+  }
+
+  // 브릿지 준비·앱 복귀(백그라운드➔포그라운드)·주기적 감지 연결
+  var prevBridgeReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    if (typeof prevBridgeReady === 'function') prevBridgeReady.apply(this, arguments);
+    mountTopSyncButton();
+    setTimeout(function() {
+      ensureInnerStudioHelper(sw);
+      runUnifiedSync({ manual: false, reason: 'boot' });
+    }, 450);
+  };
+
+  function triggerForegroundSync(reason) {
+    if (document.hidden) return;
+    if (Date.now() - lastAutoSyncAt < 3000) return;
+    runUnifiedSync({ manual: false, reason: reason });
+  }
+
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) triggerForegroundSync('visibility');
+  });
+  window.addEventListener('focus', function() { triggerForegroundSync('focus'); });
+  window.addEventListener('pageshow', function() { triggerForegroundSync('pageshow'); });
+
+  setInterval(function() {
+    if (!document.hidden && Date.now() - lastAutoSyncAt >= 45000) {
+      runUnifiedSync({ manual: false, reason: 'interval' });
+    }
+  }, 15000);
+
+  mountTopSyncButton();
+  var initSw = getStudioWin();
+  if (initSw) {
+    setTimeout(function() {
+      ensureInnerStudioHelper(initSw);
+      runUnifiedSync({ manual: false, reason: 'init_attached' });
+    }, 500);
+  }
+})();
+</script>
+<!-- ===== [/구글 드라이브 .txt 원본 & 스튜디오 클라우드 자동 반영 통합 패치 끝] ===== -->
+<!-- ===== [구글 드라이브 .txt 자동반영 + 안전한 앱 텍스트 전체삭제(원본보호) 통합 패치 V2] ===== -->
+<script id="studioDriveCloudAutoSyncV2">
+(function() {
+  if (window.__STUDIO_DRIVE_CLOUD_AUTOSYNC_V2) return;
+  window.__STUDIO_DRIVE_CLOUD_AUTOSYNC_V2 = true;
+
+  var CFG_KEY = 'magyo_cloud_cfg_v1';
+  var V95_KEY = 'magyo_studio_v95_drive_cfg';
+  var BM_KEY = 'magyo_studio_tts_autobm_v93';
+  var META_KEY = 'studio_autosync_meta_v2';
+  var BLANK_TAB_NAME = '원고없음.txt';
+  var BLANK_TAB_KEY = '원고없음';
+  var EXCLUDE_SYNC_KEYS = {
+    'magyo_studio_view_mode_v81': true,
+    'magyo_unified_prefs_v81': true,
+    'magyo_cloud_cfg_v1': true
+  };
+
+  var syncBusy = false;
+  var syncGeneration = 0;
+  var bypassPreSaveOnce = false;
+  var skipDrivePushOnce = false;
+  var suppressSilentSave = false;
+  var driveWriteLock = false;
+  var lastAutoSyncAt = 0;
+
+  function normText(s) {
+    return String(s || '').replace(/\r\n/g, '\n');
+  }
+
+  function hashText(s) {
+    var str = normText(s);
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(36) + '_' + str.length;
+  }
+
+  function normFileKey(name, stripCopyNum) {
+    var s = String(name || '').trim();
+    try { s = s.normalize('NFC'); } catch (e) {}
+    s = s.replace(/\.(txt|md)$/i, '').trim().toLowerCase();
+    if (stripCopyNum) s = s.replace(/\s*\(\d+\)$/, '').trim();
+    return s;
+  }
+
+  function isBlankTab(tabObj) {
+    if (!tabObj) return true;
+    var k = normFileKey(tabObj.name, false);
+    var emptyTxt = !String(tabObj.text || '').trim();
+    return emptyTxt && (k === BLANK_TAB_KEY || Boolean(tabObj._driveUnlinked));
+  }
+
+  // [안전장치 1] 브라우저 네트워크 방화벽: 빈 텍스트나 삭제 상태가 구글 드라이브로 전송되는 것을 원천 차단
+  function installDriveFetchFirewall(targetWin) {
+    if (!targetWin || !targetWin.fetch || targetWin.__driveSafeFetchInstalled) return;
+    targetWin.__driveSafeFetchInstalled = true;
+    var origFetch = targetWin.fetch.bind(targetWin);
+    targetWin.fetch = async function(input, init) {
+      try {
+        var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (url && url.indexOf('script.google.com/macros/') !== -1 && init && typeof init.body === 'string') {
+          var bodyObj = JSON.parse(init.body);
+          var act = (bodyObj && bodyObj.action) ? bodyObj.action : 'save';
+          if (act === 'save') {
+            var contentStr = String((bodyObj && bodyObj.content) != null ? bodyObj.content : '');
+            var fKey = normFileKey(bodyObj && bodyObj.fileName, false);
+            if (driveWriteLock || !contentStr.trim() || fKey === BLANK_TAB_KEY) {
+              var safeRes = JSON.stringify({
+                ok: false,
+                blockedByGuard: true,
+                error: '빈 원고 덮어쓰기가 자동 차단되어 구글 드라이브 원본이 보호되었습니다.'
+              });
+              return new Response(safeRes, {
+                status: 200,
+                headers: { 'Content-Type': 'application/json;charset=utf-8' }
+              });
+            }
+          }
+        }
+      } catch (e) {}
+      return origFetch(input, init);
+    };
+  }
+  installDriveFetchFirewall(window);
+
+  function b64ToUtf8(b64) {
+    var clean = String(b64 || '').replace(/\s+/g, '');
+    var bin = atob(clean);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  function parseGasKstDateMs(str) {
+    if (!str) return 0;
+    var m = String(str).trim().match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+    if (!m) return 0;
+    var now = new Date();
+    var kstNow = new Date(now.getTime() + 9 * 3600 * 1000);
+    var year = kstNow.getUTCFullYear();
+    var ms = Date.parse(year + '-' + m[1] + '-' + m[2] + 'T' + m[3] + ':' + m[4] + ':59+09:00');
+    if (ms > now.getTime() + 2 * 86400 * 1000) {
+      ms = Date.parse((year - 1) + '-' + m[1] + '-' + m[2] + 'T' + m[3] + ':' + m[4] + ':59+09:00');
+    }
+    return isNaN(ms) ? 0 : ms;
+  }
+
+  function loadMeta() {
+    try {
+      var m = JSON.parse(localStorage.getItem(META_KEY) || 'null');
+      if (m && typeof m === 'object') {
+        if (!m.tabs || typeof m.tabs !== 'object') m.tabs = {};
+        return m;
+      }
+    } catch (e) {}
+    return { lastVaultSha: '', lastVaultCommitMs: 0, bridgeVersion: 1, tabs: {} };
+  }
+
+  function saveMeta(m) {
+    try { localStorage.setItem(META_KEY, JSON.stringify(m)); } catch (e) {}
+  }
+
+  function setBarInfo(text, state) {
+    var txtEl = document.getElementById('cloudStatusText');
+    var dotEl = document.getElementById('cloudDot');
+    if (txtEl && text) txtEl.textContent = text;
+    if (dotEl) {
+      dotEl.className = 'c-dot' + (state === 'syncing' ? ' syncing' : (state === 'error' ? ' error' : ''));
+    }
+  }
+
+  function getCloudCfg() {
+    try {
+      var c = JSON.parse(localStorage.getItem(CFG_KEY) || 'null');
+      return (c && c.token && c.owner && c.vault) ? c : null;
+    } catch (e) { return null; }
+  }
+
+  function getDriveCfg() {
+    try {
+      var d = JSON.parse(localStorage.getItem(V95_KEY) || 'null');
+      return (d && d.gasUrl && String(d.gasUrl).trim()) ? d : null;
+    } catch (e) { return null; }
+  }
+
+  function getStudioWin() {
+    var ifr = Document.prototype.getElementById.call(document, 'studioFrame');
+    return (ifr && ifr.contentWindow) ? ifr.contentWindow : null;
+  }
+
+  async function ghGet(path, token) {
+    var res = await fetch('https://api.github.com' + path, {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Accept': 'application/vnd.github+json'
+      },
+      cache: 'no-store'
+    });
+    var txt = await res.text();
+    var data = null;
+    if (txt) { try { data = JSON.parse(txt); } catch (e) { data = { message: txt }; } }
+    if (!res.ok) throw new Error((data && data.message) ? data.message : ('HTTP ' + res.status));
+    return data;
+  }
+
+  async function callDriveGas(dCfg, payload) {
+    var res = await fetch(String(dCfg.gasUrl).trim(), {
+      method: 'POST',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({
+        key: dCfg.secretKey || '',
+        folderName: dCfg.folderName || '마교_퇴고스튜디오_원고함'
+      }, payload))
+    });
+    var j = await res.json();
+    if (!j || !j.ok) throw new Error((j && j.error) || '구글 드라이브 응답 오류');
+    return j;
+  }
+
+  // [안전장치 2] 구글 앱스 스크립트(v2) 내부에도 빈 원고 덮어쓰기 차단 코드 포함
+  function buildGasV2Script(folderName, secretKey) {
+    return [
+      'const DEFAULT_FOLDER=' + JSON.stringify(folderName || '마교_퇴고스튜디오_원고함') + ',SECRET_KEY=' + JSON.stringify(secretKey || '') + ';',
+      'function getFolder(n){const i=DriveApp.getFoldersByName(n);return i.hasNext()?i.next():DriveApp.createFolder(n);}',
+      'function out(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);}',
+      'function toMeta(x,g){const d=x.getLastUpdated();return{id:x.getId(),name:x.getName(),size:x.getSize(),modifiedMs:d.getTime(),updatedAt:Utilities.formatDate(d,"Asia/Seoul","MM-dd HH:mm"),fromGlobalDrive:Boolean(g)};}',
+      'function doPost(e){try{const d=JSON.parse(e.postData.contents||"{}");if(SECRET_KEY&&d.key!==SECRET_KEY)return out({ok:false,error:"보안키 불일치"});',
+      'const fd=getFolder(d.folderName||DEFAULT_FOLDER),a=d.action||"save";',
+      'if(a==="ping")return out({ok:true,bridgeVersion:2,folderName:fd.getName(),folderUrl:fd.getUrl()});',
+      'if(a==="list"){const fs=fd.getFiles(),l=[],seen={};while(fs.hasNext()&&l.length<100){const x=fs.next();if(!x.isTrashed()){l.push(toMeta(x,false));seen[x.getName().toLowerCase()]=true;}}',
+      'if(Array.isArray(d.wantGlobalTabs)){d.wantGlobalTabs.forEach(function(raw){const base=String(raw||"").trim();if(!base)return;const cands=/\\.(txt|md)$/i.test(base)?[base]:[base,base+".txt"];',
+      'cands.forEach(function(nm){if(seen[nm.toLowerCase()])return;const it=DriveApp.getFilesByName(nm);let best=null,bMs=0;while(it.hasNext()){const f=it.next();if(!f.isTrashed()){const ms=f.getLastUpdated().getTime();if(ms>bMs){bMs=ms;best=f;}}}if(best){l.push(toMeta(best,true));seen[best.getName().toLowerCase()]=true;}});});}',
+      'return out({ok:true,bridgeVersion:2,files:l,folderUrl:fd.getUrl()});}',
+      'if(a==="read"){const x=DriveApp.getFileById(d.fileId),dt=x.getLastUpdated();return out({ok:true,bridgeVersion:2,id:x.getId(),name:x.getName(),size:x.getSize(),modifiedMs:dt.getTime(),content:x.getBlob().getDataAsString("UTF-8")});}',
+      'const bodyStr=String(d.content!=null?d.content:"");if(!bodyStr.trim()&&!d.allowEmpty)return out({ok:false,blockedByGuard:true,error:"빈 원고 덮어쓰기 차단됨(드라이브 원본 보호)"});',
+      'let x=null,u=false;if(d.fileId){try{const byId=DriveApp.getFileById(d.fileId);if(!byId.isTrashed()){x=byId;x.setContent(bodyStr);u=true;}}catch(err){}}',
+      'if(!x){const ex=fd.getFilesByName(d.fileName||"원고.txt");if(ex.hasNext()){x=ex.next();x.setContent(bodyStr);u=true;}else{x=fd.createFile(d.fileName||"원고.txt",bodyStr,MimeType.PLAIN_TEXT);}}',
+      'const nd=x.getLastUpdated();return out({ok:true,bridgeVersion:2,updated:u,id:x.getId(),fileName:x.getName(),size:x.getSize(),modifiedMs:nd.getTime(),folderUrl:fd.getUrl(),updatedAt:Utilities.formatDate(nd,"Asia/Seoul","HH:mm:ss")});',
+      '}catch(err){return out({ok:false,error:String(err)});}}'
+    ].join('\n');
+  }
+
+  // 내부 #studioFrame 제어기 주입 ([텍스트 열기] 옆 전체삭제 버튼 + 로컬 전용 비우기 + 방화벽)
+  function ensureInnerStudioHelper(sw) {
+    if (!sw || !sw.document || !sw.document.body) return false;
+    installDriveFetchFirewall(sw);
+
+    if (!sw.__autoSyncInner || !sw.__autoSyncInner.readyV2) {
+      var helperCode = [
+        '(function(){',
+        '  if (window.__autoSyncInner && window.__autoSyncInner.readyV2) return;',
+        '  var lastTypeAt = 0;',
+        '  document.addEventListener("input", function(e) {',
+        '    var t = e && e.target;',
+        '    if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) lastTypeAt = Date.now();',
+        '  }, true);',
+        '  document.addEventListener("change", function(e) {',
+        '    var t = e && e.target;',
+        '    if (t && t.tagName === "INPUT" && t.type === "file" && t.id !== "v97MasterBackupInput") {',
+        '      setTimeout(function() {',
+        '        if (window.parent && typeof window.parent.__onStudioTxtFileOpened === "function") {',
+        '          window.parent.__onStudioTxtFileOpened();',
+        '        }',
+        '      }, 750);',
+        '    }',
+        '  }, true);',
+        '  if (typeof window.v95SyncActiveTabToDrive === "function") {',
+        '    var origSyncDrive = window.v95SyncActiveTabToDrive;',
+        '    window.v95SyncActiveTabToDrive = async function(opts) {',
+        '      var tab = typeof getActiveTab === "function" ? getActiveTab() : null;',
+        '      if (!tab || !String(tab.text || "").trim() || tab._driveUnlinked || String(tab.name || "").indexOf("원고없음") === 0) {',
+        '        if (!(opts && opts.quiet) && typeof showToast === "function") {',
+        '          showToast("🛡️ 앱 원고가 비어 있어 구글 드라이브 원본을 덮어쓰지 않고 보호했습니다.");',
+        '        }',
+        '        return null;',
+        '      }',
+        '      return origSyncDrive.apply(this, arguments);',
+        '    };',
+        '  }',
+        '  if (typeof window.v95PullDrive === "function") {',
+        '    var origPullDrive = window.v95PullDrive;',
+        '    window.v95PullDrive = async function() {',
+        '      var r = await origPullDrive.apply(this, arguments);',
+        '      var tab = typeof getActiveTab === "function" ? getActiveTab() : null;',
+        '      if (tab && String(tab.text || "").trim()) delete tab._driveUnlinked;',
+        '      if (window.parent && typeof window.parent.__onStudioTxtFileOpened === "function") {',
+        '        setTimeout(function() { window.parent.__onStudioTxtFileOpened(); }, 400);',
+        '      }',
+        '      return r;',
+        '    };',
+        '  }',
+        '  if (typeof window.v95CopyGasScript === "function" && window.parent && window.parent.__buildGasV2Script) {',
+        '    window.v95CopyGasScript = function() {',
+        '      var kEl = document.getElementById("v95SecretKeyInput");',
+        '      var fEl = document.getElementById("v95FolderNameInput");',
+        '      var cfg = {}; try { cfg = JSON.parse(localStorage.getItem("magyo_studio_v95_drive_cfg") || "{}"); } catch(e){}',
+        '      var k = (kEl && kEl.value.trim()) || cfg.secretKey || "";',
+        '      var f = (fEl && fEl.value.trim()) || cfg.folderName || "마교_퇴고스튜디오_원고함";',
+        '      var code = window.parent.__buildGasV2Script(f, k);',
+        '      if (typeof copyTextToClipboard === "function") copyTextToClipboard(code, "📋 원본보호 포함 드라이브 브릿지(v2) 스크립트 복사 완료!");',
+        '      else if (navigator.clipboard) navigator.clipboard.writeText(code);',
+        '    };',
+        '  }',
+        '  function mountInnerClearBtn() {',
+        '    if (document.getElementById("btnInnerClearAllText")) return;',
+        '    var nodes = document.querySelectorAll("button, label");',
+        '    var openBtn = null;',
+        '    for (var i = 0; i < nodes.length; i++) {',
+        '      var tx = (nodes[i].textContent || "").replace(/\\s+/g, " ").trim();',
+        '      if (/텍스트\\s*열기|파일\\s*열기|원고\\s*열기/.test(tx)) { openBtn = nodes[i]; break; }',
+        '    }',
+        '    var btn = document.createElement("button");',
+        '    btn.type = "button";',
+        '    btn.id = "btnInnerClearAllText";',
+        '    btn.className = "btn btn-sm btn-danger";',
+        '    btn.style.cssText = "background:rgba(239,68,68,0.18);color:#fecaca;border:1px solid rgba(248,113,113,0.55);font-weight:800;cursor:pointer;white-space:nowrap;";',
+        '    btn.textContent = "🗑️ 전체삭제";',
+        '    btn.title = "앱에 불러온 텍스트만 비웁니다 (구글 드라이브 원본 파일은 손상되지 않습니다)";',
+        '    btn.onclick = function(e) {',
+        '      e.preventDefault(); e.stopPropagation();',
+        '      if (window.parent && typeof window.parent.clearAllAppManuscriptsSafely === "function") {',
+        '        window.parent.clearAllAppManuscriptsSafely();',
+        '      }',
+        '    };',
+        '    if (openBtn && openBtn.parentNode) {',
+        '      var pcs = window.getComputedStyle(openBtn.parentNode);',
+        '      if (pcs.display !== "grid") {',
+        '        openBtn.insertAdjacentElement("afterend", btn);',
+        '        return;',
+        '      }',
+        '    }',
+        '    var fb = document.querySelector("#v95CloudBridgeBar .btn-row") || document.getElementById("fileTabBar");',
+        '    if (fb) fb.appendChild(btn);',
+        '  }',
+        '  mountInnerClearBtn();',
+        '  setTimeout(mountInnerClearBtn, 800);',
+        '  function reanchorBookmark(tabName, newText) {',
+        '    try {',
+        '      var bms = JSON.parse(localStorage.getItem("magyo_studio_tts_autobm_v93") || "{}") || {};',
+        '      var bm = bms[tabName];',
+        '      if (!bm || typeof bm.lineIdx !== "number") return null;',
+        '      var lines = String(newText || "").split("\\n");',
+        '      if (!lines.length) return bm;',
+        '      var snip = String(bm.snippet || "").trim().slice(0, 24);',
+        '      var foundIdx = Math.min(bm.lineIdx, lines.length - 1);',
+        '      if (snip.length >= 6 && (!lines[foundIdx] || lines[foundIdx].indexOf(snip) === -1)) {',
+        '        for (var d = 1; d < lines.length; d++) {',
+        '          var up = bm.lineIdx - d, dn = bm.lineIdx + d;',
+        '          if (dn < lines.length && lines[dn].indexOf(snip) !== -1) { foundIdx = dn; break; }',
+        '          if (up >= 0 && lines[up].indexOf(snip) !== -1) { foundIdx = up; break; }',
+        '        }',
+        '      }',
+        '      bm.lineIdx = foundIdx;',
+        '      bm.pct = Math.round(((foundIdx + 1) / lines.length) * 100);',
+        '      bms[tabName] = bm;',
+        '      if (bms.__LAST__ && bms.__LAST__.fileName === tabName) bms.__LAST__ = Object.assign({}, bm);',
+        '      localStorage.setItem("magyo_studio_tts_autobm_v93", JSON.stringify(bms));',
+        '      return bm;',
+        '    } catch (e) { return null; }',
+        '  }',
+        '  window.__autoSyncInner = {',
+        '    ready: true,',
+        '    readyV2: true,',
+        '    isBusyEditing: function() {',
+        '      if (typeof activeEditingLineIdx !== "undefined" && activeEditingLineIdx !== null) return true;',
+        '      var ae = document.activeElement;',
+        '      if (ae && (ae.id === "masterText" || (ae.classList && ae.classList.contains("card-edit-input"))) && (Date.now() - lastTypeAt < 4500)) return true;',
+        '      return false;',
+        '    },',
+        '    cleanupBlankPlaceholderTab: function() {',
+        '      if (typeof fileTabs === "undefined" || !Array.isArray(fileTabs) || fileTabs.length <= 1) return;',
+        '      var removed = false;',
+        '      for (var i = fileTabs.length - 1; i >= 0; i--) {',
+        '        var t = fileTabs[i];',
+        '        if (fileTabs.length > 1 && t && !String(t.text || "").trim() && (t._driveUnlinked || String(t.name || "").indexOf("원고없음") === 0)) {',
+        '          fileTabs.splice(i, 1);',
+        '          if (typeof activeTabIdx === "number" && activeTabIdx >= fileTabs.length) activeTabIdx = Math.max(0, fileTabs.length - 1);',
+        '          removed = true;',
+        '        }',
+        '      }',
+        '      if (removed) {',
+        '        var mTa = document.getElementById("masterText");',
+        '        if (mTa && fileTabs[activeTabIdx]) mTa.value = fileTabs[activeTabIdx].text;',
+        '        if (typeof renderFileTabBar === "function") renderFileTabBar();',
+        '        if (typeof analyzeAllTabs === "function") analyzeAllTabs(false);',
+        '      }',
+        '    },',
+        '    clearAllLocalOnly: function() {',
+        '      try { if (typeof window.v93TtsStop === "function") window.v93TtsStop(true); } catch (e) {}',
+        '      if (window.__nTts) {',
+        '        window.__nTts.playing = false;',
+        '        window.__nTts.paused = false;',
+        '        window.__nTts.sig = "";',
+        '        window.__nTts.items = [];',
+        '      }',
+        '      if (typeof activeEditingLineIdx !== "undefined") activeEditingLineIdx = null;',
+        '      if (typeof patchQueue !== "undefined" && Array.isArray(patchQueue)) patchQueue.length = 0;',
+        '      if (typeof fileTabs !== "undefined" && Array.isArray(fileTabs)) {',
+        '        fileTabs.forEach(function(t) { if (t) t.handle = null; });',
+        '        fileTabs = [{',
+        '          id: "tab_empty_" + Date.now(),',
+        '          name: "원고없음.txt",',
+        '          text: "",',
+        '          handle: null,',
+        '          hadCrlf: true,',
+        '          _driveUnlinked: true,',
+        '          undoStack: [],',
+        '          episodes: [],',
+        '          totalIssues: 0,',
+        '          totalMeta: 0',
+        '        }];',
+        '        activeTabIdx = 0;',
+        '      }',
+        '      var mTa = document.getElementById("masterText");',
+        '      if (mTa) mTa.value = "";',
+        '      try {',
+        '        var bms = JSON.parse(localStorage.getItem("magyo_studio_tts_autobm_v93") || "{}") || {};',
+        '        delete bms.__LAST__;',
+        '        localStorage.setItem("magyo_studio_tts_autobm_v93", JSON.stringify(bms));',
+        '      } catch (e) {}',
+        '      if (typeof analyzeAllTabs === "function") analyzeAllTabs(false);',
+        '      if (typeof renderFileTabBar === "function") renderFileTabBar();',
+        '    },',
+        '    getSnapshot: function() {',
+        '      if (typeof fileTabs === "undefined" || !Array.isArray(fileTabs)) return { activeTabIdx: 0, tabs: [] };',
+        '      var mTa = document.getElementById("masterText");',
+        '      var aIdx = typeof activeTabIdx === "number" ? activeTabIdx : 0;',
+        '      if (mTa && document.activeElement === mTa && fileTabs[aIdx]) fileTabs[aIdx].text = mTa.value;',
+        '      return {',
+        '        activeTabIdx: aIdx,',
+        '        tabs: fileTabs.map(function(t, idx) {',
+        '          return {',
+        '            idx: idx,',
+        '            id: t.id,',
+        '            name: t.name || ("원고_" + (idx + 1) + ".txt"),',
+        '            text: String(t.text || "").replace(/\\r\\n/g, "\\n"),',
+        '            hadCrlf: t.hadCrlf !== false,',
+        '            _driveUnlinked: Boolean(t._driveUnlinked),',
+        '            hasHandle: Boolean(t.handle && typeof t.handle.getFile === "function")',
+        '          };',
+        '        })',
+        '      };',
+        '    },',
+        '    readLocalHandleUpdates: async function() {',
+        '      var out = [];',
+        '      if (typeof fileTabs === "undefined" || !Array.isArray(fileTabs)) return out;',
+        '      for (var i = 0; i < fileTabs.length; i++) {',
+        '        var t = fileTabs[i];',
+        '        if (!t || t._driveUnlinked || !t.handle || typeof t.handle.getFile !== "function") continue;',
+        '        try {',
+        '          var f = await t.handle.getFile();',
+        '          var txt = String(await f.text()).replace(/\\r\\n/g, "\\n");',
+        '          if (txt.trim()) out.push({ idx: i, name: t.name, text: txt, lastModified: f.lastModified || 0 });',
+        '        } catch (e) {}',
+        '      }',
+        '      return out;',
+        '    },',
+        '    applyUpdates: function(updates) {',
+        '      if (!Array.isArray(updates) || !updates.length || typeof fileTabs === "undefined") return;',
+        '      var aIdx = typeof activeTabIdx === "number" ? activeTabIdx : 0;',
+        '      var nTtsPlaying = Boolean(window.__nTts && window.__nTts.playing && !window.__nTts.paused);',
+        '      var touchedActive = false, addedNew = false;',
+        '      updates.forEach(function(u) {',
+        '        var clean = String(u.text || "").replace(/\\r\\n/g, "\\n");',
+        '        if (u.isNewTab) {',
+        '          fileTabs.push({ id: u.id || ("tab_" + Date.now()), name: u.name || "원고.txt", text: clean, handle: null, hadCrlf: u.hadCrlf !== false, undoStack: [], episodes: [], totalIssues: 0, totalMeta: 0 });',
+        '          addedNew = true;',
+        '          return;',
+        '        }',
+        '        var tab = fileTabs[u.idx];',
+        '        if (!tab) return;',
+        '        delete tab._driveUnlinked;',
+        '        reanchorBookmark(tab.name, clean);',
+        '        if (typeof pushUndo === "function") { try { pushUndo(tab); } catch (e) {} }',
+        '        tab.text = clean;',
+        '        if (u.idx === aIdx) touchedActive = true;',
+        '      });',
+        '      if (addedNew) this.cleanupBlankPlaceholderTab();',
+        '      var mTa = document.getElementById("masterText");',
+        '      if (mTa && fileTabs[activeTabIdx]) mTa.value = fileTabs[activeTabIdx].text;',
+        '      if (window.__nTts) window.__nTts.sig = "";',
+        '      if (updates.length === 1 && !addedNew && typeof analyzeSingleTabOnly === "function" && fileTabs[updates[0].idx]) {',
+        '        analyzeSingleTabOnly(fileTabs[updates[0].idx], true);',
+        '      } else if (typeof analyzeAllTabs === "function") {',
+        '        analyzeAllTabs(true);',
+        '      }',
+        '      if (typeof renderFileTabBar === "function") renderFileTabBar();',
+        '      if (touchedActive && nTtsPlaying && typeof window.v93TtsPlay === "function") {',
+        '        try {',
+        '          var bms = JSON.parse(localStorage.getItem("magyo_studio_tts_autobm_v93") || "{}");',
+        '          var bm = bms[fileTabs[activeTabIdx].name];',
+        '          window.v93TtsPlay(bm ? bm.lineIdx : 0, bm ? (bm.sentIdx || 0) : 0);',
+        '        } catch (e) {}',
+        '      }',
+        '    },',
+        '    toast: function(msg) {',
+        '      if (typeof showToast === "function") showToast(msg);',
+        '    }',
+        '  };',
+        '})();'
+      ].join('\n');
+
+      var sc = sw.document.createElement('script');
+      sc.id = 'magyoAutoSyncInnerHelperV2';
+      sc.textContent = helperCode;
+      sw.document.body.appendChild(sc);
+    }
+    return Boolean(sw.__autoSyncInner && sw.__autoSyncInner.readyV2);
+  }
+
+  window.__buildGasV2Script = buildGasV2Script;
+  if (typeof window.v95CopyGasScript === 'function') {
+    window.v95CopyGasScript = function() {
+      var dCfg = getDriveCfg() || {};
+      var kEl = document.getElementById('v95SecretKeyInput');
+      var fEl = document.getElementById('v95FolderNameInput');
+      var code = buildGasV2Script((fEl && fEl.value.trim()) || dCfg.folderName, (kEl && kEl.value.trim()) || dCfg.secretKey);
+      if (navigator.clipboard) navigator.clipboard.writeText(code).catch(function() {});
+      alert('원본보호 기능이 포함된 드라이브 브릿지(v2) 스크립트가 복사되었습니다.');
+    };
+  }
+
+  if (typeof window.v95SyncActiveTabToDrive === 'function') {
+    var origOuterSyncDrive = window.v95SyncActiveTabToDrive;
+    window.v95SyncActiveTabToDrive = async function(opts) {
+      var sw = getStudioWin();
+      if (sw && ensureInnerStudioHelper(sw)) {
+        var snap = sw.__autoSyncInner.getSnapshot();
+        var act = snap.tabs[snap.activeTabIdx];
+        if (!act || isBlankTab(act) || !act.text.trim()) {
+          if (!(opts && opts.quiet)) sw.__autoSyncInner.toast('🛡️ 앱 원고가 비어 있어 구글 드라이브 원본을 덮어쓰지 않고 보호했습니다.');
+          return null;
+        }
+      }
+      return origOuterSyncDrive.apply(this, arguments);
+    };
+  }
+
+  function applyRemoteStorageSafely(storageObj, keepLocalBookmarks) {
+    if (!storageObj || typeof storageObj !== 'object') return;
+    var localBm = localStorage.getItem(BM_KEY);
+    Object.keys(storageObj).forEach(function(k) {
+      if (k.indexOf('magyo_') === 0 && !EXCLUDE_SYNC_KEYS[k] && typeof storageObj[k] === 'string') {
+        if (keepLocalBookmarks && k === BM_KEY && localBm) return;
+        localStorage.setItem(k, storageObj[k]);
+      }
+    });
+  }
+
+  // 통합 동기화 엔진 (GitHub 클라우드 + 로컬 파일 핸들 + 구글 드라이브 .txt 원본)
+  async function runUnifiedSync(opts) {
+    var o = opts || {};
+    if (syncBusy || driveWriteLock) return false;
+    var sw = getStudioWin();
+    if (!sw || !ensureInnerStudioHelper(sw)) return false;
+    if (!o.manual && !o.preSave && sw.__autoSyncInner.isBusyEditing()) return false;
+
+    var myGen = syncGeneration;
+    syncBusy = true;
+    lastAutoSyncAt = Date.now();
+    if (o.manual) setBarInfo('클라우드·드라이브 최신 원고 확인 중...', 'syncing');
+
+    var updatedNames = [];
+    var updatedFromDriveOrHandle = false;
+
+    try {
+      var meta = loadMeta();
+      var snap = sw.__autoSyncInner.getSnapshot();
+      var curTabs = snap.tabs || [];
+      var queuedByIdx = {};
+      var newTabsToAdd = [];
+
+      // 1단계: GitHub 스튜디오 클라우드(workspace.json) 확인
+      var cCfg = getCloudCfg();
+      if (cCfg) {
+        try {
+          var ref = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/ref/heads/' + cCfg.branch, cCfg.token);
+          if (myGen !== syncGeneration) return false;
+          var remoteSha = ref && ref.object ? ref.object.sha : '';
+          if (remoteSha && remoteSha !== meta.lastVaultSha) {
+            var commit = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/commits/' + remoteSha, cCfg.token);
+            var commitMs = (commit && commit.committer && commit.committer.date) ? Date.parse(commit.committer.date) : Date.now();
+            if (meta.lastVaultSha) {
+              var tree = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/trees/' + commit.tree.sha, cCfg.token);
+              var wsSha = null;
+              (tree.tree || []).forEach(function(it) { if (it.path === 'workspace.json') wsSha = it.sha; });
+              if (wsSha) {
+                var wBlob = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/blobs/' + wsSha, cCfg.token);
+                var remoteWs = JSON.parse(b64ToUtf8(wBlob.content));
+                if (remoteWs && remoteWs.storage) {
+                  applyRemoteStorageSafely(remoteWs.storage, Boolean(o.preSave));
+                }
+                if (remoteWs && Array.isArray(remoteWs.tabs)) {
+                  remoteWs.tabs.forEach(function(rt) {
+                    var rKey = normFileKey(rt.name, false);
+                    var rText = normText(rt.text);
+                    if (rKey === BLANK_TAB_KEY && !rText.trim()) return;
+                    var rHash = hashText(rText);
+                    var matchLocal = null;
+                    for (var i = 0; i < curTabs.length; i++) {
+                      if (curTabs[i].id === rt.id || normFileKey(curTabs[i].name, false) === rKey) { matchLocal = curTabs[i]; break; }
+                    }
+                    if (!matchLocal) {
+                      newTabsToAdd.push({ isNewTab: true, id: rt.id, name: rt.name, text: rText, hadCrlf: rt.hadCrlf });
+                      meta.tabs[rKey] = Object.assign(meta.tabs[rKey] || {}, { vaultBaseHash: rHash, fileName: rt.name });
+                      updatedNames.push(rt.name + '(서버)');
+                      return;
+                    }
+                    var cHash = hashText(matchLocal.text);
+                    var tMeta = meta.tabs[rKey] || {};
+                    if (rHash !== cHash) {
+                      var localUnchanged = !tMeta.vaultBaseHash || (cHash === tMeta.vaultBaseHash);
+                      if (localUnchanged || (!o.preSave && confirm('[' + matchLocal.name + '] 다른 기기에서 저장된 서버 최신본이 있습니다.\n최신 본문으로 교체할까요?'))) {
+                        queuedByIdx[matchLocal.idx] = { idx: matchLocal.idx, name: matchLocal.name, text: rText };
+                        updatedNames.push(matchLocal.name + '(서버)');
+                      }
+                    }
+                    meta.tabs[rKey] = Object.assign(tMeta, { vaultBaseHash: rHash, fileName: matchLocal.name });
+                  });
+                }
+              }
+            } else {
+              curTabs.forEach(function(ct) {
+                if (isBlankTab(ct)) return;
+                var k = normFileKey(ct.name, false);
+                meta.tabs[k] = Object.assign(meta.tabs[k] || {}, { vaultBaseHash: hashText(ct.text), fileName: ct.name });
+              });
+            }
+            meta.lastVaultSha = remoteSha;
+            meta.lastVaultCommitMs = isNaN(commitMs) ? Date.now() : commitMs;
+          }
+        } catch (ghErr) {
+          if (o.manual) console.warn('Vault sync check error:', ghErr);
+        }
+      }
+
+      if (myGen !== syncGeneration) return false;
+
+      // 2단계: 로컬 파일 핸들 변경 확인
+      var handleList = await sw.__autoSyncInner.readLocalHandleUpdates();
+      handleList.forEach(function(hl) {
+        var ct = curTabs[hl.idx];
+        if (!ct || isBlankTab(ct)) return;
+        var k = normFileKey(ct.name, false);
+        var tMeta = meta.tabs[k] || {};
+        var hHash = hashText(hl.text);
+        var effText = queuedByIdx[ct.idx] ? queuedByIdx[ct.idx].text : ct.text;
+        var cHash = hashText(effText);
+        if (hHash !== cHash && (!tMeta.handleBaseHash || (hHash !== tMeta.handleBaseHash && cHash === tMeta.handleBaseHash))) {
+          queuedByIdx[ct.idx] = { idx: ct.idx, name: ct.name, text: hl.text };
+          updatedNames.push(ct.name + '(로컬원본)');
+          updatedFromDriveOrHandle = true;
+        }
+        meta.tabs[k] = Object.assign(tMeta, { handleBaseHash: hHash, fileName: ct.name });
+      });
+
+      // 3단계: 구글 드라이브 .txt 원본 직접 수정 감지 (비워진 빈 탭은 건너뜀)
+      var dCfg = getDriveCfg();
+      var validDriveTabs = curTabs.filter(function(t) { return !isBlankTab(t) && normFileKey(t.name, false) !== BLANK_TAB_KEY; });
+      if (dCfg && validDriveTabs.length > 0) {
+        var wantNames = validDriveTabs.map(function(t) { return t.name; });
+        var listRes = await callDriveGas(dCfg, { action: 'list', wantGlobalTabs: wantNames });
+        if (myGen !== syncGeneration) return false;
+        if (listRes.bridgeVersion) meta.bridgeVersion = listRes.bridgeVersion;
+        var dFiles = Array.isArray(listRes.files) ? listRes.files : [];
+
+        for (var ti = 0; ti < validDriveTabs.length; ti++) {
+          var tab = validDriveTabs[ti];
+          var exactKey = normFileKey(tab.name, false);
+          var looseKey = normFileKey(tab.name, true);
+          var tMeta = meta.tabs[exactKey] || {};
+
+          var matchedFile = null;
+          if (tMeta.driveFileId) {
+            for (var fi = 0; fi < dFiles.length; fi++) {
+              if (dFiles[fi].id === tMeta.driveFileId) { matchedFile = dFiles[fi]; break; }
+            }
+          }
+          if (!matchedFile) {
+            for (var fi2 = 0; fi2 < dFiles.length; fi2++) {
+              if (normFileKey(dFiles[fi2].name, false) === exactKey) { matchedFile = dFiles[fi2]; break; }
+            }
+          }
+          if (!matchedFile && looseKey !== exactKey) {
+            for (var fi3 = 0; fi3 < dFiles.length; fi3++) {
+              if (normFileKey(dFiles[fi3].name, true) === looseKey) { matchedFile = dFiles[fi3]; break; }
+            }
+          }
+          if (!matchedFile) continue;
+
+          var dSig = String(matchedFile.modifiedMs || matchedFile.updatedAt || '') + '|' + String(matchedFile.size || 0);
+          var needRead = o.manual || !tMeta.driveBaseHash || (dSig !== tMeta.driveSig) ||
+                         (!matchedFile.modifiedMs && tab.idx === snap.activeTabIdx);
+          if (!needRead) continue;
+
+          var readRes = await callDriveGas(dCfg, { action: 'read', fileId: matchedFile.id });
+          if (myGen !== syncGeneration) return false;
+          var dText = normText(readRes.content || '');
+          var dHash = hashText(dText);
+          var curEffText = queuedByIdx[tab.idx] ? queuedByIdx[tab.idx].text : tab.text;
+          var cHash2 = hashText(curEffText);
+          if (readRes.modifiedMs) dSig = String(readRes.modifiedMs) + '|' + String(readRes.size || matchedFile.size || 0);
+
+          if (dHash === cHash2) {
+            meta.tabs[exactKey] = Object.assign(tMeta, {
+              driveFileId: matchedFile.id,
+              driveSig: dSig,
+              driveBaseHash: dHash,
+              lastKnownLength: dText.length,
+              fileName: matchedFile.name
+            });
+            continue;
+          }
+
+          var applyDrive = false;
+          if (tMeta.driveBaseHash) {
+            if (dHash !== tMeta.driveBaseHash && cHash2 === tMeta.driveBaseHash) {
+              applyDrive = true;
+            } else if (dHash !== tMeta.driveBaseHash && cHash2 !== tMeta.driveBaseHash && !o.preSave) {
+              applyDrive = confirm('[' + tab.name + '] 구글 드라이브 원본과 앱 본문이 모두 변경되었습니다.\n구글 드라이브 최신 수정본으로 교체할까요? (이전 본문은 실행취소에 보관됩니다)');
+            }
+          } else {
+            var dMs = readRes.modifiedMs || matchedFile.modifiedMs || parseGasKstDateMs(matchedFile.updatedAt);
+            if (!curEffText.trim() || (dMs > 0 && (!meta.lastVaultCommitMs || dMs >= meta.lastVaultCommitMs - 60000))) {
+              applyDrive = true;
+            } else if (!o.preSave) {
+              applyDrive = confirm('[' + tab.name + '] 구글 드라이브에 연동된 동명 파일과 내용이 다릅니다.\n• 확인: 구글 드라이브 파일 내용으로 앱 본문 교체\n• 취소: 현재 앱 본문 유지');
+            }
+          }
+
+          if (applyDrive) {
+            queuedByIdx[tab.idx] = { idx: tab.idx, name: tab.name, text: dText };
+            meta.tabs[exactKey] = Object.assign(tMeta, {
+              driveFileId: matchedFile.id,
+              driveSig: dSig,
+              driveBaseHash: dHash,
+              vaultBaseHash: dHash,
+              lastKnownLength: dText.length,
+              fileName: matchedFile.name
+            });
+            updatedNames.push(tab.name + '(드라이브)');
+            updatedFromDriveOrHandle = true;
+          } else {
+            meta.tabs[exactKey] = Object.assign(tMeta, {
+              driveFileId: matchedFile.id,
+              driveSig: dSig,
+              driveBaseHash: tMeta.driveBaseHash || dHash,
+              lastKnownLength: dText.length || tMeta.lastKnownLength || 0,
+              fileName: matchedFile.name
+            });
+          }
+        }
+      } else if (o.manual && !dCfg && !cCfg) {
+        if (typeof sw.v95OpenDriveModal === 'function') sw.v95OpenDriveModal();
+      }
+
+      if (myGen !== syncGeneration) return false;
+
+      var finalUpdates = Object.keys(queuedByIdx).map(function(k) { return queuedByIdx[k]; }).concat(newTabsToAdd);
+      if (finalUpdates.length > 0) {
+        sw.__autoSyncInner.applyUpdates(finalUpdates);
+        saveMeta(meta);
+        var nowStr = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+        setBarInfo('자동 반영됨 (' + nowStr + ')', 'ok');
+        sw.__autoSyncInner.toast('🔄 최신 원고 자동 반영 완료: ' + updatedNames.join(', '));
+
+        if (updatedFromDriveOrHandle && cCfg && typeof origSaveToCloud === 'function' && !o.preSave) {
+          bypassPreSaveOnce = true;
+          skipDrivePushOnce = true;
+          try { await origSaveToCloud(true); } catch (e) {} finally { bypassPreSaveOnce = false; skipDrivePushOnce = false; }
+          await refreshVaultShaAfterSave();
+        }
+        return true;
+      }
+
+      saveMeta(meta);
+      if (o.manual) {
+        var tStr = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+        setBarInfo('최신 상태 확인됨 (' + tStr + ')', 'ok');
+        sw.__autoSyncInner.toast(validDriveTabs.length === 0
+          ? '✅ 현재 앱에 열린 원고가 없습니다 (구글 드라이브 원본은 안전하게 보관 중).'
+          : '✅ 스튜디오 클라우드 및 구글 드라이브 원고가 모두 최신 상태입니다.');
+      }
+      return false;
+    } catch (err) {
+      if (o.manual) {
+        setBarInfo('동기화 오류: ' + err.message, 'error');
+        if (sw && sw.__autoSyncInner) sw.__autoSyncInner.toast('⚠️ 동기화 확인 실패: ' + err.message);
+      }
+      return false;
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  async function refreshVaultShaAfterSave() {
+    var cCfg = getCloudCfg();
+    var sw = getStudioWin();
+    if (!cCfg) return;
+    try {
+      var ref = await ghGet('/repos/' + cCfg.owner + '/' + cCfg.vault + '/git/ref/heads/' + cCfg.branch, cCfg.token);
+      var meta = loadMeta();
+      if (ref && ref.object && ref.object.sha) {
+        meta.lastVaultSha = ref.object.sha;
+        meta.lastVaultCommitMs = Date.now();
+      }
+      if (sw && ensureInnerStudioHelper(sw)) {
+        var snap = sw.__autoSyncInner.getSnapshot();
+        (snap.tabs || []).forEach(function(t) {
+          if (isBlankTab(t)) return;
+          var k = normFileKey(t.name, false);
+          meta.tabs[k] = Object.assign(meta.tabs[k] || {}, { vaultBaseHash: hashText(t.text), fileName: t.name });
+        });
+      }
+      saveMeta(meta);
+    } catch (e) {}
+  }
+
+  // [안전장치 3] 스튜디오 수정본을 드라이브에 역반영할 때 빈 텍스트·대량 소실 원고는 덮어쓰기 차단
+  async function pushEditedTabsToDrive(silent) {
+    if (driveWriteLock || skipDrivePushOnce) return;
+    var dCfg = getDriveCfg();
+    if (!dCfg || dCfg.autoSyncOnSave === false) return;
+    var sw = getStudioWin();
+    if (!sw || !ensureInnerStudioHelper(sw)) return;
+
+    var meta = loadMeta();
+    var snap = sw.__autoSyncInner.getSnapshot();
+    var changed = false;
+
+    for (var i = 0; i < snap.tabs.length; i++) {
+      var t = snap.tabs[i];
+      if (isBlankTab(t) || !t.text || !t.text.trim()) continue;
+
+      var k = normFileKey(t.name, false);
+      if (k === BLANK_TAB_KEY) continue;
+      var tMeta = meta.tabs[k];
+      if (!tMeta || !tMeta.driveFileId) continue;
+
+      var cHash = hashText(t.text);
+      if (cHash === tMeta.driveBaseHash) continue;
+
+      // 분량이 기존 대비 80% 이상 급감한 경우 자동 덮어쓰기 차단 (실수로 본문 지움 방지)
+      var prevLen = tMeta.lastKnownLength || 0;
+      if (prevLen >= 500 && t.text.trim().length < prevLen * 0.2) {
+        if (silent) continue;
+        var allowShrink = confirm(
+          '⚠️ [' + t.name + '] 원고 분량이 기존(' + prevLen.toLocaleString() + '자) 대비 크게 줄었습니다(' + t.text.length.toLocaleString() + '자).\n\n' +
+          '구글 드라이브 원본 파일에도 이 내용을 덮어쓰시겠습니까?\n(취소를 누르면 구글 드라이브 원본 파일은 손상 없이 그대로 보존됩니다)'
+        );
+        if (!allowShrink) continue;
+      }
+
+      try {
+        var fName = /\.(txt|md)$/i.test(t.name) ? t.name : (t.name + '.txt');
+        var bodyText = t.hadCrlf ? t.text.replace(/\n/g, '\r\n') : t.text;
+        var savePayload = { action: 'save', fileName: fName, content: bodyText };
+        if (meta.bridgeVersion >= 2) savePayload.fileId = tMeta.driveFileId;
+        var res = await callDriveGas(dCfg, savePayload);
+        var newSig = (res.modifiedMs ? String(res.modifiedMs) : String(tMeta.driveSig || '').split('|')[0]) + '|' + String(res.size || bodyText.length);
+        tMeta.driveBaseHash = cHash;
+        tMeta.lastKnownLength = t.text.length;
+        if (res.modifiedMs) tMeta.driveSig = newSig;
+        if (res.id) tMeta.driveFileId = res.id;
+        changed = true;
+      } catch (e) {
+        if (!silent && sw.__autoSyncInner) sw.__autoSyncInner.toast('⚠️ 드라이브 저장 확인(' + t.name + '): ' + e.message);
+      }
+    }
+    if (changed) saveMeta(meta);
+  }
+
+  // ★ 핵심 기능: 앱에 불러온 텍스트 전체삭제 (구글 드라이브 원본 100% 무손상 보장)
+  window.clearAllAppManuscriptsSafely = async function() {
+    var sw = getStudioWin();
+    if (!sw || !ensureInnerStudioHelper(sw)) {
+      alert('스튜디오 화면이 아직 준비되지 않았습니다.');
+      return;
+    }
+
+    var snap = sw.__autoSyncInner.getSnapshot();
+    var alreadyClean = snap.tabs.length === 1 && isBlankTab(snap.tabs[0]);
+    if (alreadyClean) {
+      sw.__autoSyncInner.toast('이미 앱에 불러온 텍스트가 모두 비워져 있습니다.');
+      return;
+    }
+
+    var ok = confirm(
+      '앱에 불러온 텍스트와 원고 탭을 모두 삭제(비우기)하시겠습니까?\n\n' +
+      '🛡️ 안전 보장: 구글 드라이브에 있는 원본(.txt) 파일에는 어떠한 삭제나 손상도 발생하지 않습니다.'
+    );
+    if (!ok) return;
+
+    syncGeneration++;
+    driveWriteLock = true;
+    suppressSilentSave = true;
+
+    try {
+      // 1) 구글 드라이브 매핑 연결고리 먼저 완전 해제
+      var meta = loadMeta();
+      meta.tabs = {};
+      saveMeta(meta);
+
+      // 2) 앱 내부 원고·탭·오디오·파일핸들 전체 비우기
+      sw.__autoSyncInner.clearAllLocalOnly();
+
+      // 3) 앱 재실행 시에도 비운 상태가 유지되도록 앱 세션(workspace.json)만 갱신 (구글 드라이브 전송은 완전 차단)
+      var cCfg = getCloudCfg();
+      if (cCfg && typeof origSaveToCloud === 'function') {
+        bypassPreSaveOnce = true;
+        skipDrivePushOnce = true;
+        suppressSilentSave = false;
+        try {
+          await origSaveToCloud(true);
+          await refreshVaultShaAfterSave();
+        } catch (e) {} finally {
+          bypassPreSaveOnce = false;
+          skipDrivePushOnce = false;
+        }
+      }
+
+      var nowStr = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+      setBarInfo('앱 원고 비움 완료 · 드라이브 원본 보호됨 (' + nowStr + ')', 'ok');
+      sw.__autoSyncInner.toast('🗑️ 앱 내 텍스트를 모두 삭제했습니다! (구글 드라이브 원본 파일은 안전하게 보존됨)');
+    } finally {
+      suppressSilentSave = false;
+      setTimeout(function() { driveWriteLock = false; }, 1200);
+    }
+  };
+
+  // 기존 저장·불러오기 함수 래핑
+  var origSaveToCloud = window.saveToCloudFromStudio;
+  if (typeof origSaveToCloud === 'function') {
+    window.saveToCloudFromStudio = async function(silent) {
+      if (silent && suppressSilentSave) return;
+      if (!bypassPreSaveOnce) {
+        await runUnifiedSync({ preSave: true, manual: false, reason: 'pre_save' });
+      }
+      var res = await origSaveToCloud.apply(this, arguments);
+      await refreshVaultShaAfterSave();
+      if (!skipDrivePushOnce && !driveWriteLock) {
+        await pushEditedTabsToDrive(Boolean(silent));
+      }
+      return res;
+    };
+  }
+
+  window.saveToCloudSilent = function() {
+    if (suppressSilentSave || driveWriteLock) return;
+    if (typeof window.saveToCloudFromStudio === 'function') {
+      window.saveToCloudFromStudio(true);
+    }
+  };
+
+  var origPullFromCloud = window.pullFromCloudNow;
+  window.pullFromCloudNow = async function() {
+    var sw = getStudioWin();
+    if (sw && ensureInnerStudioHelper(sw)) {
+      await runUnifiedSync({ manual: true, reason: 'pull_btn' });
+    } else if (typeof origPullFromCloud === 'function') {
+      await origPullFromCloud.apply(this, arguments);
+    }
+  };
+
+  window.syncDriveAndCloudNow = function() {
+    runUnifiedSync({ manual: true, reason: 'sync_btn' });
+  };
+
+  window.__onStudioTxtFileOpened = function() {
+    var sw = getStudioWin();
+    if (sw && ensureInnerStudioHelper(sw)) {
+      sw.__autoSyncInner.cleanupBlankPlaceholderTab();
+    }
+    runUnifiedSync({ manual: false, reason: 'txt_opened' });
+  };
+
+  // 상단 클라우드 바에 [🔄 원고동기화] 및 [🗑️ 전체삭제] 버튼 장착
+  function mountTopCloudBarButtons() {
+    var barRight = document.querySelector('#cloudBar .cbar-right');
+    if (!barRight) return;
+
+    if (!document.getElementById('btnDriveAutoSyncNow')) {
+      var syncBtn = document.createElement('button');
+      syncBtn.type = 'button';
+      syncBtn.id = 'btnDriveAutoSyncNow';
+      syncBtn.className = 'c-btn';
+      syncBtn.style.borderColor = '#14b8a6';
+      syncBtn.style.color = '#5eead4';
+      syncBtn.textContent = '🔄 원고동기화';
+      syncBtn.title = '구글 드라이브 원본(.txt) 및 스튜디오 클라우드의 최신 수정 내용을 즉시 반영합니다';
+      syncBtn.onclick = function() { window.syncDriveAndCloudNow(); };
+      barRight.insertBefore(syncBtn, barRight.firstChild);
+    }
+
+    if (!document.getElementById('btnClearAllAppText')) {
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.id = 'btnClearAllAppText';
+      delBtn.className = 'c-btn';
+      delBtn.style.background = '#3b1520';
+      delBtn.style.borderColor = '#f43f5e';
+      delBtn.style.color = '#fda4af';
+      delBtn.textContent = '🗑️ 전체삭제';
+      delBtn.title = '앱에 불러온 모든 원고 텍스트만 깨끗이 비웁니다 (구글 드라이브 원본 파일 보호)';
+      delBtn.onclick = function() { window.clearAllAppManuscriptsSafely(); };
+      var syncEl = document.getElementById('btnDriveAutoSyncNow');
+      if (syncEl && syncEl.nextSibling) barRight.insertBefore(delBtn, syncEl.nextSibling);
+      else barRight.appendChild(delBtn);
+    }
+  }
+
+  var prevBridgeReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    if (typeof prevBridgeReady === 'function') prevBridgeReady.apply(this, arguments);
+    mountTopCloudBarButtons();
+    setTimeout(function() {
+      ensureInnerStudioHelper(sw);
+      runUnifiedSync({ manual: false, reason: 'boot' });
+    }, 450);
+  };
+
+  function triggerForegroundSync(reason) {
+    if (document.hidden || driveWriteLock) return;
+    if (Date.now() - lastAutoSyncAt < 3000) return;
+    runUnifiedSync({ manual: false, reason: reason });
+  }
+
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) triggerForegroundSync('visibility');
+  });
+  window.addEventListener('focus', function() { triggerForegroundSync('focus'); });
+  window.addEventListener('pageshow', function() { triggerForegroundSync('pageshow'); });
+
+  setInterval(function() {
+    mountTopCloudBarButtons();
+    var sw = getStudioWin();
+    if (sw) ensureInnerStudioHelper(sw);
+    if (!document.hidden && !driveWriteLock && Date.now() - lastAutoSyncAt >= 45000) {
+      runUnifiedSync({ manual: false, reason: 'interval' });
+    }
+  }, 15000);
+
+  mountTopCloudBarButtons();
+  var initSw = getStudioWin();
+  if (initSw) {
+    setTimeout(function() {
+      ensureInnerStudioHelper(initSw);
+      runUnifiedSync({ manual: false, reason: 'init_attached' });
+    }, 500);
+  }
+})();
+</script>
+<!-- ===== [/구글 드라이브 .txt 자동반영 + 안전한 앱 텍스트 전체삭제(원본보호) 통합 패치 V2 끝] ===== -->
+ 
  
 </body>
 </html>
