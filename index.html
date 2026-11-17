@@ -3111,14 +3111,125 @@
 </script>
 <!-- ===== /v9.8 애드온 끝 ===== -->
 <script src="./v99-save-patch.js"></script>
-<!-- ===== [안드로이드 APK 네이티브 내장 음성(AndroidTTS) 연결 브릿지] ===== -->
+<!-- ===== [안드로이드 APK 내장 음성 + 상단 여백 + 모바일 터치 듣기 통합 패치] ===== -->
+<style id="apkMobileFixOuterStyle">
+  html.is-apk-app body {
+    padding-top: max(env(safe-area-inset-top, 0px), 30px) !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+    background: #060b16 !important;
+  }
+  html.is-apk-app #btnRestoreCloudBar {
+    top: calc(max(env(safe-area-inset-top, 0px), 30px) + 6px) !important;
+  }
+  .v98-search-fab { display: none !important; }
+  .v99-docked-in-bar {
+    position: static !important;
+    inset: auto !important;
+    transform: none !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    margin: 0 4px 0 0 !important;
+    padding: 3px 8px !important;
+    height: 24px !important;
+    font-size: 0.72rem !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    flex-shrink: 0 !important;
+    z-index: 2 !important;
+  }
+  .v99-docked-collapsed {
+    position: fixed !important;
+    top: calc(max(env(safe-area-inset-top, 0px), 30px) + 6px) !important;
+    right: 102px !important;
+    left: auto !important;
+    bottom: auto !important;
+    transform: none !important;
+    padding: 3px 8px !important;
+    font-size: 0.72rem !important;
+    z-index: 9998 !important;
+  }
+  @media (max-width: 560px) {
+    #cloudBar.has-v99-badge #cloudStatusText { display: none !important; }
+  }
+</style>
+
 <script id="androidNativeTtsBridge">
 (function() {
-  if (window.__ANDROID_NATIVE_TTS_BRIDGE_ACTIVE) return;
-  window.__ANDROID_NATIVE_TTS_BRIDGE_ACTIVE = true;
+  if (window.__ANDROID_MOBILE_ALL_FIX_V2) return;
+  window.__ANDROID_MOBILE_ALL_FIX_V2 = true;
 
-  // 새 APK 앱 환경이 아니면(PC·일반 브라우저) 아무것도 바꾸지 않고 종료
-  if (!window.AndroidTTS) return;
+  var isNativeApk = Boolean(window.AndroidTTS);
+  if (isNativeApk || /wv|Version\/\d+\.\d+.*Chrome/i.test(navigator.userAgent || '')) {
+    document.documentElement.classList.add('is-apk-app');
+  }
+  if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
+    navigator.serviceWorker.getRegistrations().then(function(regs) {
+      regs.forEach(function(r) { try { r.update(); } catch (e) {} });
+    }).catch(function() {});
+  }
+
+  // 1. 화면 한가운데 떠서 버튼을 가리는 미저장/통합저장/저장됨 배지를 상단 클라우드 바로 이동
+  function dockFloatingSaveBadge(targetDoc, isInner) {
+    if (!targetDoc || !targetDoc.body) return;
+    var cloudBar = document.getElementById('cloudBar');
+    var barCollapsed = cloudBar && cloudBar.classList.contains('collapsed');
+    var nodes = targetDoc.body.querySelectorAll('*');
+
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'IFRAME') continue;
+      if (!isInner) {
+        if (el.id === 'cloudBar' || el.id === 'btnRestoreCloudBar' || el.id === 'appWrap') continue;
+        if (cloudBar && cloudBar.contains(el) && !el.hasAttribute('data-v99-badge')) continue;
+        if (el.closest && el.closest('#setupScreen, #uploadScreen, .gdoc-modal-backdrop')) continue;
+      } else {
+        if (el.closest && el.closest('#v93TtsPlayerDock, #highlightViewer, .gdoc-modal-backdrop')) continue;
+      }
+
+      var alreadyMarked = el.hasAttribute('data-v99-badge');
+      var cs = targetDoc.defaultView.getComputedStyle(el);
+      if (!alreadyMarked && cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+
+      var rect = el.getBoundingClientRect();
+      if (!alreadyMarked && (rect.width < 28 || rect.width > 260 || rect.height < 16 || rect.height > 64)) continue;
+
+      var idCls = (el.id || '') + ' ' + (typeof el.className === 'string' ? el.className : '');
+      var txt = (el.textContent || '').trim();
+      var isSavePill = /v99/i.test(idCls) ||
+        (/(미저장|통합\s*저장|저장됨|변경됨)/.test(txt) && txt.length <= 26 && txt.indexOf('서버 저장 완료') === -1);
+      if (!isSavePill) continue;
+
+      var rootEl = el;
+      while (!alreadyMarked && rootEl.parentElement && rootEl.parentElement !== targetDoc.body) {
+        var pcs = targetDoc.defaultView.getComputedStyle(rootEl.parentElement);
+        if (pcs.position === 'fixed' || pcs.position === 'absolute') rootEl = rootEl.parentElement;
+        else break;
+      }
+      rootEl.setAttribute('data-v99-badge', '1');
+
+      if (!isInner && cloudBar) {
+        var leftSlot = cloudBar.querySelector('.cbar-left') || cloudBar;
+        cloudBar.classList.add('has-v99-badge');
+        if (barCollapsed) {
+          if (rootEl.parentElement !== document.body) document.body.appendChild(rootEl);
+          rootEl.classList.remove('v99-docked-in-bar');
+          rootEl.classList.add('v99-docked-collapsed');
+        } else {
+          if (rootEl.parentElement !== leftSlot) leftSlot.insertBefore(rootEl, leftSlot.firstChild);
+          rootEl.classList.remove('v99-docked-collapsed');
+          rootEl.classList.add('v99-docked-in-bar');
+        }
+      } else if (isInner) {
+        rootEl.style.setProperty('position', 'fixed', 'important');
+        rootEl.style.setProperty('top', 'auto', 'important');
+        rootEl.style.setProperty('left', 'auto', 'important');
+        rootEl.style.setProperty('right', '10px', 'important');
+        rootEl.style.setProperty('bottom', '56px', 'important');
+        rootEl.style.setProperty('transform', 'none', 'important');
+        rootEl.style.setProperty('z-index', '950', 'important');
+      }
+    }
+  }
 
   var activeStudioWin = null;
   var BATCH_CHAR_LIMIT = 55000;
@@ -3129,14 +3240,13 @@
       activeStudioWin.__handleNativeTtsIndex(Number(localIdx) || 0);
     }
   };
-
   window.onNativeTtsDone = function() {
     if (activeStudioWin && typeof activeStudioWin.__handleNativeTtsDone === 'function') {
       activeStudioWin.__handleNativeTtsDone();
     }
   };
 
-  function cleanTextForNativeTts(str) {
+  function cleanSpeech(str) {
     return String(str || '')
       .replace(/^[#*\-\s]+/, '')
       .replace(/\*\*([^*]+)\*\*/g, '$1')
@@ -3146,16 +3256,14 @@
       .trim();
   }
 
-  function splitParagraphToSentences(rawLine, isHeader) {
+  function splitSentences(rawLine, isHeader) {
     var t = String(rawLine || '').trim();
     if (!t || t === '* * *' || /^[-=*_─━]{3,}$/.test(t)) return [];
     if (isHeader) {
-      var hSp = cleanTextForNativeTts(t);
-      return hSp ? [{ raw: t, sp: hSp.slice(0, 300) }] : [];
+      var h = cleanSpeech(t);
+      return h ? [{ raw: t, sp: h.slice(0, 300) }] : [];
     }
-
-    var primary = [];
-    var s = 0, len = t.length;
+    var primary = [], s = 0, len = t.length;
     for (var i = 0; i < len; i++) {
       var ch = t.charAt(i);
       if (ch === '.' || ch === '!' || ch === '?') {
@@ -3168,18 +3276,14 @@
         }
       }
     }
-    if (s < len) {
-      var rest = t.slice(s).trim();
-      if (rest) primary.push(rest);
-    }
+    if (s < len && t.slice(s).trim()) primary.push(t.slice(s).trim());
 
     var out = [];
     for (var p = 0; p < primary.length; p++) {
-      var seg = primary[p];
-      var clean = cleanTextForNativeTts(seg);
+      var clean = cleanSpeech(primary[p]);
       if (!clean) continue;
       if (clean.length <= 280) {
-        out.push({ raw: seg, sp: clean });
+        out.push({ raw: primary[p], sp: clean });
       } else {
         var pos = 0;
         while (pos < clean.length) {
@@ -3189,8 +3293,7 @@
             if (cut < 80) cut = slice.lastIndexOf(' ');
             if (cut > 60) slice = clean.slice(pos, pos + cut + 1);
           }
-          var piece = slice.trim();
-          if (piece) out.push({ raw: piece, sp: piece });
+          if (slice.trim()) out.push({ raw: slice.trim(), sp: slice.trim() });
           pos += slice.length;
         }
       }
@@ -3198,8 +3301,201 @@
     return out;
   }
 
-  function installIntoStudioWindow(sw) {
-    if (!sw || !sw.document) return;
+  // 2. 스튜디오 내부 뷰어(#studioFrame)에 모바일 🔊 버튼 + 문장 꾹 누르기 + 스킵 홀드 주입
+  function installMobileTouchControls(sw) {
+    if (!sw || !sw.document || sw.__mobileTouchInstalled) return;
+    sw.__mobileTouchInstalled = true;
+    var doc = sw.document;
+
+    var stTag = doc.createElement('style');
+    stTag.id = 'mobileTtsTouchStyles';
+    stTag.textContent = [
+      '@media (hover: none), (pointer: coarse) {',
+      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) {',
+      '    position: relative !important; padding-right: 36px !important;',
+      '  }',
+      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) .p-actions {',
+      '    display: flex !important; opacity: 1 !important; visibility: visible !important;',
+      '    position: absolute !important; top: 4px !important; right: 2px !important;',
+      '    margin: 0 !important; padding: 0 !important; background: transparent !important;',
+      '  }',
+      '  #highlightViewer .p-row:not(.has-issue):not(.has-meta) .p-actions > :not(.btn-tts-line) {',
+      '    display: none !important;',
+      '  }',
+      '  #highlightViewer .p-row.has-issue .p-actions, #highlightViewer .p-row.has-meta .p-actions {',
+      '    display: flex !important; opacity: 1 !important; visibility: visible !important;',
+      '  }',
+      '  #highlightViewer .p-row .btn-tts-line {',
+      '    display: inline-flex !important; opacity: 0.82 !important; visibility: visible !important;',
+      '    align-items: center !important; justify-content: center !important;',
+      '    width: 28px !important; height: 28px !important; padding: 0 !important;',
+      '    border-radius: 999px !important; font-size: 13px !important;',
+      '    background: rgba(30, 41, 59, 0.78) !important;',
+      '    border: 1px solid rgba(148, 163, 184, 0.3) !important;',
+      '    pointer-events: auto !important;',
+      '  }',
+      '}',
+      '#v93TtsPlayerDock button { user-select: none !important; -webkit-touch-callout: none !important; }',
+      '.mobile-lp-flash { outline: 2px solid #38bdf8 !important; background: rgba(56, 189, 248, 0.22) !important; border-radius: 8px; }'
+    ].join('\n');
+    (doc.head || doc.documentElement).appendChild(stTag);
+
+    function ensureRowTtsButtons() {
+      var rows = doc.querySelectorAll('#highlightViewer .p-row[data-line]');
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        if (r.querySelector('.btn-tts-line')) continue;
+        var act = r.querySelector('.p-actions');
+        if (!act) {
+          act = doc.createElement('div');
+          act.className = 'p-actions';
+          r.appendChild(act);
+        }
+        var ln = r.getAttribute('data-line');
+        var b = doc.createElement('button');
+        b.type = 'button';
+        b.className = 'btn-tts-line';
+        b.textContent = '🔊';
+        b.setAttribute('onclick', 'event.stopPropagation(); window.v93TtsPlay(' + ln + ', 0);');
+        act.insertBefore(b, act.firstChild);
+      }
+    }
+    ensureRowTtsButtons();
+    var hv = doc.getElementById('highlightViewer');
+    if (hv && typeof MutationObserver !== 'undefined') {
+      new MutationObserver(ensureRowTtsButtons).observe(hv, { childList: true });
+    }
+
+    var suppressClickUntil = 0;
+    doc.addEventListener('click', function(e) {
+      if (Date.now() < suppressClickUntil) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        suppressClickUntil = 0;
+      }
+    }, true);
+
+    // 앞·뒤 스킵 버튼 꾹 누르기 연속 고속 이동
+    var holdTimer = null, repTimer = null, ticks = 0;
+    function clearHold() {
+      clearTimeout(holdTimer);
+      clearInterval(repTimer);
+      holdTimer = null;
+      repTimer = null;
+      ticks = 0;
+    }
+    function findSkipBtn(target) {
+      if (!target || !target.closest) return null;
+      var btn = target.closest('button, [role="button"], [onclick]');
+      if (!btn) return null;
+      var oc = btn.getAttribute('onclick') || '';
+      var m = oc.match(/v93TtsStepParagraph\s*\(\s*(-?\d+)\s*\)/);
+      if (m) return { mode: 'para', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
+      m = oc.match(/v93TtsStepSentence\s*\(\s*(-?\d+)\s*\)/);
+      if (m) return { mode: 'sent', dir: parseInt(m[1], 10) < 0 ? -1 : 1 };
+      var meta = [btn.id || '', btn.title || '', (btn.textContent || '').trim()].join(' ');
+      if (/이전\s*문단|⏮|⏪|◀◀/.test(meta)) return { mode: 'para', dir: -1 };
+      if (/다음\s*문단|⏭|⏩|▶▶/.test(meta)) return { mode: 'para', dir: 1 };
+      if (/이전\s*문장/.test(meta)) return { mode: 'sent', dir: -1 };
+      if (/다음\s*문장/.test(meta)) return { mode: 'sent', dir: 1 };
+      return null;
+    }
+    function stepFast(act, mult) {
+      var d = act.dir * mult;
+      if (act.mode === 'sent' && typeof sw.v93TtsStepSentence === 'function') sw.v93TtsStepSentence(d);
+      else if (typeof sw.v93TtsStepParagraph === 'function') sw.v93TtsStepParagraph(d);
+      if (typeof sw.showToast === 'function') {
+        sw.showToast((d < 0 ? '⏪ ' : '⏩ +') + d + (act.mode === 'sent' ? '문장' : '문단') + ' 고속 스킵');
+      }
+    }
+
+    // 본문 문장 0.4초 꾹 눌러 해당 문장부터 즉시 재생
+    var lpTimer = null, sx = 0, sy = 0;
+    function cancelLp() { clearTimeout(lpTimer); lpTimer = null; }
+
+    function getSentIdxAtPoint(row, x, y) {
+      var box = row.querySelector('.p-text') || row;
+      if (doc.caretRangeFromPoint) {
+        try {
+          var range = doc.caretRangeFromPoint(x, y);
+          if (range && box.contains(range.startContainer)) {
+            var pre = doc.createRange();
+            pre.selectNodeContents(box);
+            pre.setEnd(range.startContainer, range.startOffset);
+            var m = pre.toString().match(/[.!?…。！？]["'”’)\]]*\s+/g);
+            return m ? m.length : 0;
+          }
+        } catch (err) {}
+      }
+      return 0;
+    }
+
+    doc.addEventListener('pointerdown', function(e) {
+      if (e.button && e.button !== 0) return;
+      var skipAct = findSkipBtn(e.target);
+      if (skipAct) {
+        clearHold();
+        holdTimer = setTimeout(function() {
+          suppressClickUntil = Date.now() + 1500;
+          if (navigator.vibrate) navigator.vibrate(15);
+          stepFast(skipAct, 1);
+          repTimer = setInterval(function() {
+            ticks++;
+            suppressClickUntil = Date.now() + 1000;
+            stepFast(skipAct, ticks > 14 ? 5 : (ticks > 5 ? 3 : 1));
+          }, 140);
+        }, 320);
+        return;
+      }
+
+      if (!e.target || !e.target.closest) return;
+      if (e.target.closest('button, a, input, textarea, select')) return;
+      var row = e.target.closest('#highlightViewer .p-row[data-line]');
+      if (!row) return;
+
+      cancelLp();
+      sx = e.clientX;
+      sy = e.clientY;
+      lpTimer = setTimeout(function() {
+        lpTimer = null;
+        suppressClickUntil = Date.now() + 900;
+        var lineIdx = parseInt(row.getAttribute('data-line'), 10);
+        if (isNaN(lineIdx)) return;
+        var sentIdx = getSentIdxAtPoint(row, sx, sy);
+
+        row.classList.add('mobile-lp-flash');
+        setTimeout(function() { row.classList.remove('mobile-lp-flash'); }, 700);
+        try { if (sw.getSelection) sw.getSelection().removeAllRanges(); } catch (err) {}
+        if (navigator.vibrate) navigator.vibrate(25);
+
+        if (typeof sw.v93TtsPlay === 'function') {
+          sw.v93TtsPlay(lineIdx, sentIdx);
+          if (typeof sw.showToast === 'function') {
+            sw.showToast('🔊 ' + (lineIdx + 1) + '번 문단' + (sentIdx > 0 ? ' (' + (sentIdx + 1) + '번째 문장)' : '') + '부터 재생');
+          }
+        }
+      }, 420);
+    }, true);
+
+    doc.addEventListener('pointermove', function(e) {
+      if (lpTimer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancelLp();
+    }, true);
+
+    ['pointerup', 'pointercancel'].forEach(function(ev) {
+      sw.addEventListener(ev, function() { clearHold(); cancelLp(); }, true);
+    });
+    sw.addEventListener('scroll', cancelLp, true);
+
+    doc.addEventListener('contextmenu', function(e) {
+      if (Date.now() < suppressClickUntil || holdTimer || repTimer) {
+        e.preventDefault();
+      }
+    }, true);
+  }
+
+  // 3. 안드로이드 APK 네이티브 내장 음성(AndroidTTS) 연동
+  function installNativeTtsEngine(sw) {
+    if (!isNativeApk || !sw || !sw.document) return;
     activeStudioWin = sw;
 
     var savedRate = 1.0;
@@ -3209,393 +3505,270 @@
     } catch (e) {}
 
     var st = sw.__nativeTtsState || {
-      playing: false,
-      paused: false,
-      rate: savedRate,
-      tabName: '',
-      textLen: -1,
-      totalLines: 0,
-      items: [],
-      curIdx: 0,
-      batchOffset: 0,
-      batchLen: 0,
-      startedAt: 0,
-      skipTimer: null
+      playing: false, paused: false, rate: savedRate,
+      tabName: '', textLen: -1, totalLines: 0, items: [],
+      curIdx: 0, batchOffset: 0, batchLen: 0, startedAt: 0, skipTimer: null
     };
     sw.__nativeTtsState = st;
 
-    function escHtml(s) {
-      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function stopAnyWebAudioInStudio() {
+    function stopWebAudio() {
       try { if (sw.speechSynthesis) sw.speechSynthesis.cancel(); } catch (e) {}
       try {
-        var audios = sw.document.querySelectorAll('audio');
-        for (var i = 0; i < audios.length; i++) {
-          try { audios[i].pause(); } catch (e2) {}
-        }
+        var aus = sw.document.querySelectorAll('audio');
+        for (var i = 0; i < aus.length; i++) { try { aus[i].pause(); } catch (e2) {} }
       } catch (e) {}
     }
 
     function getTab() {
       if (typeof sw.getActiveTab === 'function') return sw.getActiveTab();
-      if (Array.isArray(sw.fileTabs) && typeof sw.activeTabIdx === 'number') {
-        return sw.fileTabs[sw.activeTabIdx] || null;
-      }
+      if (Array.isArray(sw.fileTabs) && typeof sw.activeTabIdx === 'number') return sw.fileTabs[sw.activeTabIdx] || null;
       return null;
     }
 
-    function ensureItemsBuilt(tab) {
-      if (!tab || !tab.text || !tab.text.trim()) {
-        st.items = [];
-        st.totalLines = 0;
-        return false;
-      }
-      if (st.tabName === tab.name && st.textLen === tab.text.length && st.items.length > 0) {
-        return true;
-      }
+    function ensureItems(tab) {
+      if (!tab || !tab.text || !tab.text.trim()) { st.items = []; return false; }
+      if (st.tabName === tab.name && st.textLen === tab.text.length && st.items.length > 0) return true;
       var lines = tab.text.split('\n');
       var eps = (tab.episodes && tab.episodes.length)
         ? tab.episodes
         : [{ title: tab.name || '원고 낭독', startLine: 0, hasExplicitHeader: false, lines: lines }];
-
       var list = [];
       for (var eIdx = 0; eIdx < eps.length; eIdx++) {
-        var ep = eps[eIdx];
-        var epLines = ep.lines || [];
+        var ep = eps[eIdx], epLines = ep.lines || [];
         for (var lIdx = 0; lIdx < epLines.length; lIdx++) {
-          var rawLine = epLines[lIdx];
-          var gLine = (ep.startLine || 0) + lIdx;
-          var isHdr = Boolean(lIdx === 0 && ep.hasExplicitHeader);
-          var sents = splitParagraphToSentences(rawLine, isHdr);
+          var rawLine = epLines[lIdx], gLine = (ep.startLine || 0) + lIdx;
+          var sents = splitSentences(rawLine, Boolean(lIdx === 0 && ep.hasExplicitHeader));
           for (var sIdx = 0; sIdx < sents.length; sIdx++) {
             list.push({
-              epIdx: eIdx,
-              epTitle: ep.title || '원고 낭독',
-              lineIdx: gLine,
-              sentIdx: sIdx,
-              rawLine: String(rawLine || '').trim(),
-              rawSent: sents[sIdx].raw,
-              sp: sents[sIdx].sp
+              epIdx: eIdx, epTitle: ep.title || '원고 낭독', lineIdx: gLine, sentIdx: sIdx,
+              rawLine: String(rawLine || '').trim(), rawSent: sents[sIdx].raw, sp: sents[sIdx].sp
             });
           }
         }
       }
-      st.tabName = tab.name;
-      st.textLen = tab.text.length;
-      st.totalLines = lines.length;
-      st.items = list;
+      st.tabName = tab.name; st.textLen = tab.text.length; st.totalLines = lines.length; st.items = list;
       if (st.curIdx >= list.length) st.curIdx = 0;
       return list.length > 0;
     }
 
-    function saveBookmark(item) {
-      if (!item) return;
+    function saveBm(item) {
       var tab = getTab();
-      if (!tab) return;
+      if (!item || !tab) return;
       try {
-        var BM_KEY = 'magyo_studio_tts_autobm_v93';
-        var bms = JSON.parse(localStorage.getItem(BM_KEY) || '{}') || {};
+        var bms = JSON.parse(localStorage.getItem('magyo_studio_tts_autobm_v93') || '{}') || {};
         var pct = st.totalLines > 0 ? Math.round(((item.lineIdx + 1) / st.totalLines) * 100) : 0;
-        var norm = (typeof sw.normalizeSig === 'function')
-          ? sw.normalizeSig(item.rawLine).slice(0, 45)
-          : item.rawLine.slice(0, 45);
+        var norm = (typeof sw.normalizeSig === 'function') ? sw.normalizeSig(item.rawLine).slice(0, 45) : item.rawLine.slice(0, 45);
         var rec = {
-          fileName: tab.name,
-          epIdx: item.epIdx,
-          epTitle: item.epTitle,
-          lineIdx: item.lineIdx,
-          sentIdx: item.sentIdx,
-          snippet: item.rawLine.slice(0, 70),
-          normSig: norm,
-          pct: pct,
-          updatedAt: Date.now()
+          fileName: tab.name, epIdx: item.epIdx, epTitle: item.epTitle,
+          lineIdx: item.lineIdx, sentIdx: item.sentIdx,
+          snippet: item.rawLine.slice(0, 70), normSig: norm, pct: pct, updatedAt: Date.now()
         };
-        bms[tab.name] = rec;
-        bms.__LAST__ = rec;
-        localStorage.setItem(BM_KEY, JSON.stringify(bms));
+        bms[tab.name] = rec; bms.__LAST__ = rec;
+        localStorage.setItem('magyo_studio_tts_autobm_v93', JSON.stringify(bms));
       } catch (e) {}
     }
 
-    function syncPlayerUI(scrollViewer) {
-      var doc = sw.document;
-      var isOn = st.playing && !st.paused;
+    function syncUI(scrollViewer) {
+      var doc = sw.document, isOn = st.playing && !st.paused;
       var mBtn = doc.getElementById('v93BtnPlayMain');
-      if (mBtn) {
-        mBtn.classList.toggle('is-playing', isOn);
-        mBtn.textContent = isOn ? '⏸ 일시정지' : '▶ 듣기';
-      }
+      if (mBtn) { mBtn.classList.toggle('is-playing', isOn); mBtn.textContent = isOn ? '⏸ 일시정지' : '▶ 듣기'; }
       var sBadge = doc.getElementById('v93SpeedBadge');
-      if (sBadge) {
-        sBadge.textContent = st.rate.toFixed(1) + 'x';
-      }
-
+      if (sBadge) sBadge.textContent = st.rate.toFixed(1) + 'x';
       var item = st.items[st.curIdx];
-      if (!item) return;
+      if (!item || doc.hidden) return;
 
-      if (!doc.hidden) {
-        var epEl = doc.getElementById('v93StatusEp');
-        var pvEl = doc.getElementById('v93StatusPreview');
-        if (epEl) {
-          epEl.innerHTML = '<span style="color:#4ade80;font-weight:800;">📱 내장 음성</span> · ' +
-            escHtml(item.epTitle + ' · ' + (item.lineIdx + 1) + '줄');
-        }
-        if (pvEl) {
-          pvEl.textContent = item.rawSent || item.rawLine;
-        }
-        var oldRows = doc.querySelectorAll('#highlightViewer .v93-tts-row-active');
-        for (var i = 0; i < oldRows.length; i++) oldRows[i].classList.remove('v93-tts-row-active');
+      var epEl = doc.getElementById('v93StatusEp'), pvEl = doc.getElementById('v93StatusPreview');
+      if (epEl) {
+        var safeTitle = String(item.epTitle + ' · ' + (item.lineIdx + 1) + '줄').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        epEl.innerHTML = '<span style="color:#4ade80;font-weight:800;">📱 내장 음성</span> · ' + safeTitle;
+      }
+      if (pvEl) pvEl.textContent = item.rawSent || item.rawLine;
 
-        var row = doc.querySelector('#highlightViewer .p-row[data-line="' + item.lineIdx + '"]');
-        if (row) {
-          row.classList.add('v93-tts-row-active');
-          if (scrollViewer !== false) {
-            try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
-          }
-        }
+      var old = doc.querySelectorAll('#highlightViewer .v93-tts-row-active');
+      for (var i = 0; i < old.length; i++) old[i].classList.remove('v93-tts-row-active');
+      var row = doc.querySelector('#highlightViewer .p-row[data-line="' + item.lineIdx + '"]');
+      if (row) {
+        row.classList.add('v93-tts-row-active');
+        if (scrollViewer !== false) { try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {} }
       }
     }
 
-    function sendNativeBatchFrom(globalIdx) {
+    function speakFrom(globalIdx) {
       if (!st.items.length) return;
       var idx = Math.max(0, Math.min(st.items.length - 1, globalIdx));
-      st.curIdx = idx;
-      st.playing = true;
-      st.paused = false;
-
-      var chunk = [];
-      var charSum = 0;
+      st.curIdx = idx; st.playing = true; st.paused = false;
+      var chunk = [], sum = 0;
       for (var i = idx; i < st.items.length; i++) {
         var sp = st.items[i].sp;
-        if (chunk.length > 0 && (charSum + sp.length) > BATCH_CHAR_LIMIT) break;
+        if (chunk.length > 0 && (sum + sp.length) > BATCH_CHAR_LIMIT) break;
         chunk.push(sp);
-        charSum += sp.length + 2;
+        sum += sp.length + 2;
       }
-
-      st.batchOffset = idx;
-      st.batchLen = chunk.length;
-      st.startedAt = Date.now();
-
-      stopAnyWebAudioInStudio();
-      saveBookmark(st.items[idx]);
-      syncPlayerUI(true);
-
-      try {
-        window.AndroidTTS.speakList(JSON.stringify(chunk), 0, Number(st.rate) || 1.0);
-      } catch (err) {
-        if (typeof sw.showToast === 'function') sw.showToast('내장 음성 호출 오류: ' + err.message);
-      }
+      st.batchOffset = idx; st.batchLen = chunk.length; st.startedAt = Date.now();
+      stopWebAudio();
+      saveBm(st.items[idx]);
+      syncUI(true);
+      try { window.AndroidTTS.speakList(JSON.stringify(chunk), 0, Number(st.rate) || 1.0); } catch (e) {}
     }
 
     sw.__handleNativeTtsIndex = function(localIdx) {
       if (!st.playing || st.paused) return;
       var gIdx = st.batchOffset + localIdx;
       if (gIdx >= 0 && gIdx < st.items.length) {
-        st.curIdx = gIdx;
-        saveBookmark(st.items[gIdx]);
-        syncPlayerUI(true);
+        st.curIdx = gIdx; saveBm(st.items[gIdx]); syncUI(true);
       }
     };
-
     sw.__handleNativeTtsDone = function() {
       if (!st.playing || st.paused) return;
       if (Date.now() - st.startedAt < 400 && st.batchLen > 1) return;
-      var nextBatchStart = st.batchOffset + st.batchLen;
-      if (nextBatchStart < st.items.length) {
-        sendNativeBatchFrom(nextBatchStart);
-      } else {
-        sw.v93TtsStop(true);
-      }
+      var next = st.batchOffset + st.batchLen;
+      if (next < st.items.length) speakFrom(next);
+      else sw.v93TtsStop(true);
     };
-
-    if (!sw.__nativeVisBound) {
-      sw.__nativeVisBound = true;
-      sw.document.addEventListener('visibilitychange', function() {
-        if (!sw.document.hidden && st.playing && !st.paused) {
-          syncPlayerUI(true);
-        }
-      });
-    }
 
     sw.v93TtsPlay = function(startLine, startSent) {
       var tab = getTab();
-      if (!ensureItemsBuilt(tab)) {
-        if (typeof sw.showToast === 'function') sw.showToast('먼저 원고를 불러와 주세요.');
-        return;
-      }
+      if (!ensureItems(tab)) { if (sw.showToast) sw.showToast('먼저 원고를 불러와 주세요.'); return; }
       var dock = sw.document.getElementById('v93TtsPlayerDock');
       if (dock) dock.classList.add('open');
+      if (typeof startLine !== 'number' && st.paused && st.items.length > 0) { speakFrom(st.curIdx); return; }
 
-      if (typeof startLine !== 'number' && st.paused && st.items.length > 0) {
-        sendNativeBatchFrom(st.curIdx);
-        return;
-      }
-
-      var targetLine = typeof startLine === 'number' ? startLine : -1;
-      var targetSent = typeof startSent === 'number' ? startSent : 0;
-
-      if (targetLine < 0) {
+      var tLine = typeof startLine === 'number' ? startLine : -1;
+      var tSent = typeof startSent === 'number' ? startSent : 0;
+      if (tLine < 0) {
         try {
           var bms = JSON.parse(localStorage.getItem('magyo_studio_tts_autobm_v93') || '{}');
           if (bms && bms[tab.name] && typeof bms[tab.name].lineIdx === 'number') {
-            targetLine = bms[tab.name].lineIdx;
-            targetSent = bms[tab.name].sentIdx || 0;
+            tLine = bms[tab.name].lineIdx; tSent = bms[tab.name].sentIdx || 0;
           }
         } catch (e) {}
       }
-
-      var foundIdx = 0;
-      if (targetLine >= 0) {
-        var matched = false;
+      var fIdx = 0;
+      if (tLine >= 0) {
+        var hit = false;
         for (var i = 0; i < st.items.length; i++) {
           var it = st.items[i];
-          if (it.lineIdx > targetLine || (it.lineIdx === targetLine && it.sentIdx >= targetSent)) {
-            foundIdx = i;
-            matched = true;
-            break;
-          }
+          if (it.lineIdx > tLine || (it.lineIdx === tLine && it.sentIdx >= tSent)) { fIdx = i; hit = true; break; }
         }
-        if (!matched && st.items.length > 0) foundIdx = st.items.length - 1;
+        if (!hit && st.items.length > 0) fIdx = st.items.length - 1;
       }
-      sendNativeBatchFrom(foundIdx);
+      speakFrom(fIdx);
     };
 
     sw.v93TtsPause = function() {
       clearTimeout(st.skipTimer);
-      st.playing = false;
-      st.paused = true;
+      st.playing = false; st.paused = true;
       try { window.AndroidTTS.stop(); } catch (e) {}
-      stopAnyWebAudioInStudio();
-      saveBookmark(st.items[st.curIdx]);
-      syncPlayerUI(false);
-      if (typeof window.saveToCloudSilent === 'function') {
-        try { window.saveToCloudSilent(); } catch (e) {}
-      }
+      stopWebAudio();
+      saveBm(st.items[st.curIdx]); syncUI(false);
+      if (typeof window.saveToCloudSilent === 'function') { try { window.saveToCloudSilent(); } catch (e) {} }
     };
-
-    sw.v93TtsTogglePlayPause = function() {
-      if (st.playing && !st.paused) sw.v93TtsPause();
-      else sw.v93TtsPlay();
-    };
-
+    sw.v93TtsTogglePlayPause = function() { if (st.playing && !st.paused) sw.v93TtsPause(); else sw.v93TtsPlay(); };
     sw.v93TtsStop = function() {
       clearTimeout(st.skipTimer);
-      st.playing = false;
-      st.paused = false;
+      st.playing = false; st.paused = false;
       try { window.AndroidTTS.stop(); } catch (e) {}
-      stopAnyWebAudioInStudio();
+      stopWebAudio();
       var rows = sw.document.querySelectorAll('#highlightViewer .v93-tts-row-active');
       for (var i = 0; i < rows.length; i++) rows[i].classList.remove('v93-tts-row-active');
-      syncPlayerUI(false);
+      syncUI(false);
     };
-
     sw.v93TtsStepSentence = function(delta) {
-      var tab = getTab();
-      if (!ensureItemsBuilt(tab)) return;
-      var step = Number(delta) || 1;
-      st.curIdx = Math.max(0, Math.min(st.items.length - 1, st.curIdx + step));
-      saveBookmark(st.items[st.curIdx]);
-      syncPlayerUI(true);
+      if (!ensureItems(getTab())) return;
+      try { window.AndroidTTS.stop(); } catch (e) {}
+      st.curIdx = Math.max(0, Math.min(st.items.length - 1, st.curIdx + (Number(delta) || 1)));
+      saveBm(st.items[st.curIdx]); syncUI(true);
       clearTimeout(st.skipTimer);
-      st.skipTimer = setTimeout(function() {
-        sendNativeBatchFrom(st.curIdx);
-      }, 150);
+      st.skipTimer = setTimeout(function() { speakFrom(st.curIdx); }, 220);
     };
-
     sw.v93TtsStepParagraph = function(delta) {
-      var tab = getTab();
-      if (!ensureItemsBuilt(tab)) return;
-      var step = Number(delta) || 1;
-      var dir = step >= 0 ? 1 : -1;
-      var moves = Math.abs(step);
-      var idx = st.curIdx;
+      if (!ensureItems(getTab())) return;
+      try { window.AndroidTTS.stop(); } catch (e) {}
+      var step = Number(delta) || 1, dir = step >= 0 ? 1 : -1, moves = Math.abs(step), idx = st.curIdx;
       for (var m = 0; m < moves; m++) {
-        var curLine = st.items[idx].lineIdx;
-        while (idx + dir >= 0 && idx + dir < st.items.length && st.items[idx + dir].lineIdx === curLine) {
-          idx += dir;
-        }
+        var curL = st.items[idx].lineIdx;
+        while (idx + dir >= 0 && idx + dir < st.items.length && st.items[idx + dir].lineIdx === curL) idx += dir;
         if (idx + dir >= 0 && idx + dir < st.items.length) idx += dir;
         if (dir < 0) {
-          var targetL = st.items[idx].lineIdx;
-          while (idx - 1 >= 0 && st.items[idx - 1].lineIdx === targetL) idx--;
+          var tL = st.items[idx].lineIdx;
+          while (idx - 1 >= 0 && st.items[idx - 1].lineIdx === tL) idx--;
         }
       }
-      st.curIdx = idx;
-      saveBookmark(st.items[st.curIdx]);
-      syncPlayerUI(true);
+      st.curIdx = idx; saveBm(st.items[idx]); syncUI(true);
       clearTimeout(st.skipTimer);
-      st.skipTimer = setTimeout(function() {
-        sendNativeBatchFrom(st.curIdx);
-      }, 150);
+      st.skipTimer = setTimeout(function() { speakFrom(st.curIdx); }, 220);
     };
-
     sw.v93ChangeSpeed = function(d, exact) {
-      var nextRate = exact ? Number(d) : +(st.rate + Number(d)).toFixed(2);
-      if (isNaN(nextRate)) return;
-      st.rate = Math.max(0.6, Math.min(2.5, nextRate));
+      var nr = exact ? Number(d) : +(st.rate + Number(d)).toFixed(2);
+      if (isNaN(nr)) return;
+      st.rate = Math.max(0.6, Math.min(2.5, nr));
       try { localStorage.setItem(RATE_STORAGE_KEY, String(st.rate)); } catch (e) {}
-      syncPlayerUI(false);
+      syncUI(false);
       if (st.playing && !st.paused) {
         clearTimeout(st.skipTimer);
-        st.skipTimer = setTimeout(function() {
-          sendNativeBatchFrom(st.curIdx);
-        }, 150);
+        st.skipTimer = setTimeout(function() { speakFrom(st.curIdx); }, 200);
       }
     };
-
-    syncPlayerUI(false);
+    syncUI(false);
   }
 
-  var prevOnBridgeReady = window.__onBridgeReady;
-  window.__onBridgeReady = function(studioWin) {
-    if (typeof prevOnBridgeReady === 'function') {
-      prevOnBridgeReady.apply(this, arguments);
-    }
-    installIntoStudioWindow(studioWin);
-    setTimeout(function() { installIntoStudioWindow(studioWin); }, 350);
+  function setupAllForStudio(sw) {
+    if (!sw) return;
+    installMobileTouchControls(sw);
+    installNativeTtsEngine(sw);
+    dockFloatingSaveBadge(document, false);
+    try { dockFloatingSaveBadge(sw.document, true); } catch (e) {}
+  }
+
+  var prevReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    if (typeof prevReady === 'function') prevReady.apply(this, arguments);
+    setupAllForStudio(sw);
+    setTimeout(function() { setupAllForStudio(sw); }, 450);
   };
 
-  function bindIframe(ifr) {
-    if (!ifr || ifr.__nativeBound) return;
-    ifr.__nativeBound = true;
+  var origToggleBar = window.toggleCloudBar;
+  if (typeof origToggleBar === 'function') {
+    window.toggleCloudBar = function(hide) {
+      origToggleBar(hide);
+      dockFloatingSaveBadge(document, false);
+    };
+  }
+
+  function bindFrame(ifr) {
+    if (!ifr || ifr.__v2Bound) return;
+    ifr.__v2Bound = true;
     ifr.addEventListener('load', function() {
       try {
         if (ifr.contentWindow) {
-          installIntoStudioWindow(ifr.contentWindow);
-          setTimeout(function() { installIntoStudioWindow(ifr.contentWindow); }, 350);
+          setupAllForStudio(ifr.contentWindow);
+          setTimeout(function() { setupAllForStudio(ifr.contentWindow); }, 450);
         }
       } catch (e) {}
     });
     try {
       if (ifr.contentWindow && ifr.contentWindow.document && ifr.contentWindow.document.readyState === 'complete') {
-        installIntoStudioWindow(ifr.contentWindow);
+        setupAllForStudio(ifr.contentWindow);
       }
     } catch (e) {}
   }
 
-  var existingFrame = document.getElementById('studioFrame');
-  if (existingFrame) bindIframe(existingFrame);
-
-  var frameWrap = document.getElementById('frameWrap');
-  if (frameWrap && typeof MutationObserver !== 'undefined') {
+  var curFrame = document.getElementById('studioFrame');
+  if (curFrame) bindFrame(curFrame);
+  var wrap = document.getElementById('frameWrap');
+  if (wrap && typeof MutationObserver !== 'undefined') {
     new MutationObserver(function() {
       var f = document.getElementById('studioFrame');
-      if (f) bindIframe(f);
-    }).observe(frameWrap, { childList: true });
+      if (f) bindFrame(f);
+    }).observe(wrap, { childList: true });
   }
 
-  document.addEventListener('visibilitychange', function() {
-    if (!document.hidden && activeStudioWin && activeStudioWin.__nativeTtsState) {
-      var s = activeStudioWin.__nativeTtsState;
-      if (s.playing && !s.paused && typeof activeStudioWin.__handleNativeTtsIndex === 'function') {
-        activeStudioWin.__handleNativeTtsIndex(s.curIdx - s.batchOffset);
-      }
-    }
-  });
+  setInterval(function() {
+    dockFloatingSaveBadge(document, false);
+    if (activeStudioWin) { try { dockFloatingSaveBadge(activeStudioWin.document, true); } catch (e) {} }
+  }, 900);
 })();
 </script>
-<!-- ===== [/안드로이드 APK 네이티브 내장 음성(AndroidTTS) 연결 브릿지 끝] ===== -->
- 
+<!-- ===== [/통합 패치 끝] ===== --> 
 </body>
 </html>
