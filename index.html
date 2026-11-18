@@ -4988,3 +4988,907 @@
 })();
 </script>
 <!-- ===== [/클라우드 바 버튼 '☰ 메뉴' 탭 내부 이동 패치 끝] ===== -->
+<!-- ===== [모바일 전용 UI 3단 압축 · 회차 실시간 고정바 · 듣기 옵션창 분리 · 알림창 회차표시 · 다음권 자동재생 통합 패치] ===== -->
+<style id="mobMasterPatchV10OuterStyle">
+  /* 모바일 모드 시 최상단 클라우드 바의 '🔍 검색' 버튼 및 검색 패널 완전 숨김 */
+  html.is-mob-ui-v10 #cloudBar .v98-search-fab,
+  html.is-mob-ui-v10 #cloudBar .v98-search-fab.docked-bar-pill,
+  html.is-mob-ui-v10 .v98-search-fab,
+  html.is-mob-ui-v10 .v98-search-panel {
+    display: none !important;
+  }
+</style>
+
+<script id="mobMasterPatchV10Script">
+(function() {
+  if (window.__MOB_MASTER_PATCH_V10) return;
+  window.__MOB_MASTER_PATCH_V10 = true;
+
+  var origDocGetById = Document.prototype.getElementById;
+  var savedBaseTitle = document.title || 'Studio Cloud';
+  var currentPlayingEpInfo = { full: '', epPart: '', subPart: '', bookPart: '' };
+  var manualStopTs = 0;
+
+  function getStudioWin() {
+    var ifr = origDocGetById.call(document, 'studioFrame');
+    return (ifr && ifr.contentWindow) ? ifr.contentWindow : null;
+  }
+
+  function isMobileStudio(sw) {
+    if (!sw || !sw.document || !sw.document.body) {
+      return window.innerWidth <= 820 || Boolean(window.AndroidTTS);
+    }
+    var b = sw.document.body;
+    if (b.classList.contains('view-mode-pc') && window.innerWidth > 820) return false;
+    if (b.classList.contains('view-mode-mobile')) return true;
+    return window.innerWidth <= 820 || Boolean(window.AndroidTTS);
+  }
+
+  // 회차 + 소제목 깔끔 추출 (문장·줄 번호 완전 배제)
+  function parseEpAndSubtitle(rawEpTitle, rawTabName) {
+    var cleanBook = String(rawTabName || '').replace(/\.(txt|md)$/i, '').trim() || '오디오북';
+    var cleanEp = String(rawEpTitle || '')
+      .replace(/^[📌📖🔖#*\-\s]+/, '')
+      .replace(/\s*·\s*\d+\s*(?:줄|번째\s*문장|문장).*$/, '')
+      .replace(/\s*\(\d+%\)\s*$/, '')
+      .trim();
+
+    if (!cleanEp || cleanEp === '원고' || cleanEp === '원고 낭독') {
+      return { full: cleanBook, epPart: cleanBook, subPart: '', bookPart: cleanBook };
+    }
+
+    var m = cleanEp.match(/^((?:제\s*)?\d+\s*(?:화|편|장|권)|프롤로그|에필로그|외전[^\s.:：\-—·]*)\s*(?:[.:：\-—·]+\s*|\s+)?(.*)$/);
+    if (m) {
+      var epRaw = m[1].replace(/\s+/g, '');
+      if (/^\d+(?:화|편|장)$/.test(epRaw)) epRaw = '제' + epRaw;
+      var sub = (m[2] || '').trim();
+      var full = sub ? (epRaw + '. ' + sub) : epRaw;
+      return { full: full, epPart: epRaw, subPart: sub, bookPart: cleanBook };
+    }
+    return { full: cleanEp, epPart: cleanEp.slice(0, 10), subPart: '', bookPart: cleanBook };
+  }
+
+  // 회차 드롭다운 칸에 표시할 짧은 회차명 ('제26화')
+  function toShortEpBadge(rawTitle, epNum, hasExplicit) {
+    if (hasExplicit && typeof epNum === 'number' && epNum > 0) {
+      return '제' + epNum + '화';
+    }
+    var clean = String(rawTitle || '').replace(/^[📌📖🔖#*\-\s]+/, '').trim();
+    var m = clean.match(/^(?:제\s*)?(\d+)\s*(화|편|장)/);
+    if (m) return '제' + m[1] + m[2];
+    var sp = clean.match(/^(프롤로그|에필로그|외전\s*\d*화?)/);
+    if (sp) return sp[1].replace(/\s+/g, '');
+    if (!clean || clean === '회차 미지정') return '전체';
+    return clean.length > 7 ? clean.slice(0, 7) : clean;
+  }
+
+  // 시스템 미디어 알림창(MediaSession) 및 APK 타이틀 동기화
+  function applyCleanNotificationMeta(sw, epTitle, tabName) {
+    var info = parseEpAndSubtitle(epTitle, tabName);
+    currentPlayingEpInfo = info;
+
+    [window, sw].forEach(function(w) {
+      if (!w || !w.navigator || !('mediaSession' in w.navigator)) return;
+      try {
+        var Ctor = w.__OrigMediaMetadata || w.MediaMetadata;
+        if (typeof Ctor === 'function') {
+          w.navigator.mediaSession.metadata = new Ctor({
+            title: info.full,
+            artist: info.bookPart,
+            album: ''
+          });
+        }
+        w.navigator.mediaSession.playbackState = 'playing';
+      } catch (e) {}
+    });
+
+    if (info.full) {
+      document.title = info.full;
+      if (sw && sw.document) sw.document.title = info.full;
+    }
+
+    if (window.AndroidTTS && info.full) {
+      ['setNotificationTitle', 'setTitle', 'setEpisodeTitle', 'setChapterTitle', 'updateNotificationTitle'].forEach(function(fn) {
+        try {
+          if (typeof window.AndroidTTS[fn] === 'function') window.AndroidTTS[fn](info.full);
+        } catch (e) {}
+      });
+    }
+
+    if (sw && sw.document) {
+      var epEl = sw.document.getElementById('v93StatusEp');
+      if (epEl) epEl.textContent = '🎧 ' + info.full;
+    }
+  }
+
+  function installMediaMetadataSanitizer(w) {
+    if (!w || typeof w.MediaMetadata !== 'function' || w.__mobMediaMetaWrapped) return;
+    w.__mobMediaMetaWrapped = true;
+    var OrigMM = w.MediaMetadata;
+    w.__OrigMediaMetadata = OrigMM;
+    w.MediaMetadata = function(init) {
+      var src = init || {};
+      var fallbackTitle = src.title || '';
+      var info = currentPlayingEpInfo.full
+        ? currentPlayingEpInfo
+        : parseEpAndSubtitle(fallbackTitle, src.artist || '');
+      return new OrigMM({
+        title: info.full || fallbackTitle,
+        artist: info.bookPart || '',
+        album: '',
+        artwork: src.artwork || []
+      });
+    };
+    w.MediaMetadata.prototype = OrigMM.prototype;
+  }
+  installMediaMetadataSanitizer(window);
+
+  // 내부 스튜디오(iframe) 어휘 스코프 브릿지 주입 (탭 목록·권 이동 제어용)
+  function ensureLexicalBridge(sw) {
+    if (!sw || !sw.document || !sw.document.body) return false;
+    if (!sw.__mobV10BridgeReady) {
+      var sc = sw.document.createElement('script');
+      sc.id = 'mobV10LexicalBridge';
+      sc.textContent = [
+        '(function(){',
+        '  window.__mobV10BridgeReady = true;',
+        '  window.__mobV10GetState = function() {',
+        '    if (typeof fileTabs === "undefined" || !Array.isArray(fileTabs)) return { activeTabIdx: 0, tabs: [] };',
+        '    return { activeTabIdx: typeof activeTabIdx === "number" ? activeTabIdx : 0, tabs: fileTabs };',
+        '  };',
+        '  window.__mobV10AdvanceNextTab = function() {',
+        '    if (typeof fileTabs === "undefined" || !Array.isArray(fileTabs) || fileTabs.length <= 1) return null;',
+        '    var curIdx = typeof activeTabIdx === "number" ? activeTabIdx : 0;',
+        '    var curTab = fileTabs[curIdx];',
+        '    var isValid = function(t) {',
+        '      return Boolean(t && !t._driveUnlinked && String(t.text || "").trim().length > 0 && !/^원고없음(?:\\.(?:txt|md))?$/i.test(String(t.name || "").trim()));',
+        '    };',
+        '    var targetIdx = -1;',
+        '    if (curTab && curTab.name) {',
+        '      var vm = String(curTab.name).match(/(\\d+)\\s*권/);',
+        '      if (vm) {',
+        '        var nextVol = (parseInt(vm[1], 10) + 1) + "권";',
+        '        for (var i = 0; i < fileTabs.length; i++) {',
+        '          if (i !== curIdx && isValid(fileTabs[i]) && String(fileTabs[i].name || "").indexOf(nextVol) !== -1) {',
+        '            targetIdx = i; break;',
+        '          }',
+        '        }',
+        '      }',
+        '    }',
+        '    if (targetIdx === -1) {',
+        '      for (var j = curIdx + 1; j < fileTabs.length; j++) {',
+        '        if (isValid(fileTabs[j])) { targetIdx = j; break; }',
+        '      }',
+        '    }',
+        '    if (targetIdx === -1) return null;',
+        '    activeTabIdx = targetIdx;',
+        '    if (typeof activeEditingLineIdx !== "undefined") activeEditingLineIdx = null;',
+        '    var nextTab = fileTabs[targetIdx];',
+        '    var mTa = document.getElementById("masterText");',
+        '    if (mTa && nextTab) mTa.value = nextTab.text;',
+        '    if (nextTab && (!nextTab.episodes || !nextTab.episodes.length || nextTab._needsAnalyze)) {',
+        '      if (typeof analyzeSingleTabOnly === "function") analyzeSingleTabOnly(nextTab, false);',
+        '      else if (typeof analyzeAllTabs === "function") analyzeAllTabs(false);',
+        '    }',
+        '    var vSel = document.querySelector("[data-mob-docked-vbar=\\"1\\"] select");',
+        '    if (vSel && vSel.options && vSel.options.length > 0 && vSel.selectedIndex !== 0) {',
+        '      vSel.selectedIndex = 0;',
+        '      try { vSel.dispatchEvent(new Event("change", { bubbles: true })); } catch (e) {}',
+        '    }',
+        '    if (typeof renderFileTabBar === "function") renderFileTabBar();',
+        '    if (typeof refreshActiveTabViews === "function") refreshActiveTabViews(false);',
+        '    try { window.scrollTo(0, 0); } catch (e) {}',
+        '    return { idx: targetIdx, name: nextTab.name };',
+        '  };',
+        '})();'
+      ].join('\n');
+      sw.document.body.appendChild(sc);
+    }
+    return Boolean(sw.__mobV10BridgeReady);
+  }
+
+  // 내부 스튜디오 모바일 전용 스타일 주입
+  function ensureInnerStyles(sw) {
+    var doc = sw.document;
+    if (doc.getElementById('mobMasterPatchV10InnerStyle')) return;
+    var st = doc.createElement('style');
+    st.id = 'mobMasterPatchV10InnerStyle';
+    st.textContent = [
+      '/* 모바일 모드 전용 (is-mob-ui-v10) */',
+      'html.is-mob-ui-v10 header {',
+      '  position: sticky !important; top: 0 !important; z-index: 960 !important;',
+      '}',
+      'html.is-mob-ui-v10 [data-mob-hide-vsearch="1"],',
+      'html.is-mob-ui-v10 [data-mob-hide-pc="1"],',
+      'html.is-mob-ui-v10 [data-mob-hide-errbtn="1"],',
+      'html.is-mob-ui-v10 [data-mob-empty-row2="1"],',
+      'html.is-mob-ui-v10 [data-mob-dup-menuitem="1"],',
+      'html.is-mob-ui-v10 #btnInnerClearAllText {',
+      '  display: none !important;',
+      '}',
+      '/* 2번째 줄: [현재 탭 선택] + [취소] + [메뉴] 1줄 정렬 */',
+      'html.is-mob-ui-v10 [data-mob-compressed-row1="1"] {',
+      '  display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;',
+      '  align-items: center !important; gap: 6px !important; width: 100% !important; margin: 0 !important;',
+      '}',
+      'html.is-mob-ui-v10 [data-mob-top-tabsel="1"] {',
+      '  flex: 1 1 auto !important; min-width: 0 !important; height: 34px !important;',
+      '  margin: 0 !important; font-size: 0.8rem !important;',
+      '}',
+      'html.is-mob-ui-v10 [data-mob-top-undo="1"],',
+      'html.is-mob-ui-v10 [data-mob-compressed-row1="1"] #btnMobMenuToggle,',
+      'html.is-mob-ui-v10 [data-mob-compressed-row1="1"] [data-mob-menubtn="1"] {',
+      '  flex: 0 0 auto !important; width: auto !important; height: 34px !important;',
+      '  padding: 0 11px !important; margin: 0 !important; border-radius: 8px !important;',
+      '  display: inline-flex !important; align-items: center !important; justify-content: center !important;',
+      '  font-size: 0.79rem !important; font-weight: 800 !important; white-space: nowrap !important;',
+      '}',
+      '/* 3번째 줄: 고정 뷰어 바 ([제26화 ▾] [가-] [가+] [👁️] [☀️] [🎧 듣기]) */',
+      'html.is-mob-ui-v10 [data-mob-docked-vbar="1"] {',
+      '  display: none !important;',
+      '}',
+      'html.is-mob-ui-v10 [data-mob-docked-vbar="1"].is-hl-active {',
+      '  display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;',
+      '  align-items: center !important; justify-content: space-between !important; gap: 5px !important;',
+      '  width: 100% !important; margin: 6px 0 0 0 !important; padding: 6px 0 2px 0 !important;',
+      '  background: transparent !important; border: none !important;',
+      '  border-top: 1px solid rgba(148, 163, 184, 0.16) !important;',
+      '  border-radius: 0 !important; box-shadow: none !important; overflow: visible !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-ep-live-wrap {',
+      '  position: relative !important; flex: 1 1 auto !important; min-width: 72px !important;',
+      '  height: 33px !important; padding: 0 9px !important; border-radius: 8px !important;',
+      '  background: #0f172a !important; border: 1px solid #334155 !important; color: #f8fafc !important;',
+      '  display: inline-flex !important; align-items: center !important; justify-content: space-between !important;',
+      '  gap: 4px !important; font-size: 0.81rem !important; font-weight: 800 !important; overflow: hidden !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-ep-live-txt {',
+      '  overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important;',
+      '  pointer-events: none !important; color: #7dd3fc !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-ep-live-arrow {',
+      '  font-size: 0.72rem !important; color: #94a3b8 !important; flex-shrink: 0 !important; pointer-events: none !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-ep-live-wrap > select {',
+      '  position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important;',
+      '  opacity: 0 !important; cursor: pointer !important; z-index: 3 !important; margin: 0 !important; padding: 0 !important;',
+      '}',
+      'html.is-mob-ui-v10 [data-mob-docked-vbar="1"] > button,',
+      'html.is-mob-ui-v10 [data-mob-docked-vbar="1"] > label {',
+      '  flex: 0 0 auto !important; height: 33px !important; min-width: 34px !important;',
+      '  padding: 0 8px !important; margin: 0 !important; border-radius: 8px !important;',
+      '  display: inline-flex !important; align-items: center !important; justify-content: center !important;',
+      '  font-size: 0.78rem !important; font-weight: 800 !important; white-space: nowrap !important;',
+      '}',
+      'html.is-mob-ui-v10 [data-mob-listen-btn="1"].is-tts-on {',
+      '  background: #0d9488 !important; border-color: #2dd4bf !important; color: #ffffff !important;',
+      '  box-shadow: 0 0 10px rgba(20, 184, 166, 0.4) !important;',
+      '}',
+      '/* ☰ 메뉴 내부 정리 */',
+      'html.is-mob-ui-v10 #mobMenuQuickToolsGrid {',
+      '  display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important;',
+      '  gap: 6px !important; width: 100% !important; flex: 1 1 100% !important; margin: 2px 0 !important;',
+      '}',
+      'html.is-mob-ui-v10 #mobMenuQuickToolsGrid > button,',
+      'html.is-mob-ui-v10 #mobMenuQuickToolsGrid > label {',
+      '  width: 100% !important; height: 36px !important; margin: 0 !important; padding: 0 6px !important;',
+      '  display: inline-flex !important; align-items: center !important; justify-content: center !important;',
+      '  font-size: 0.78rem !important; font-weight: 800 !important; border-radius: 8px !important; white-space: nowrap !important;',
+      '}',
+      'html.is-mob-ui-v10 #btnMenuOpenTtsPage {',
+      '  flex: 1 1 100% !important; width: 100% !important; height: 38px !important;',
+      '  background: linear-gradient(135deg, #0d9488, #0284c7) !important; color: #fff !important;',
+      '  border: 1px solid #38bdf8 !important; border-radius: 8px !important; font-size: 0.84rem !important;',
+      '  font-weight: 800 !important; cursor: pointer !important;',
+      '}',
+      '/* 전용 듣기 설정 모달 페이지 (본문 하단 가림 영구 해제) */',
+      'html.is-mob-ui-v10 #mobTtsOptionModalBackdrop {',
+      '  display: none !important; position: fixed !important; inset: 0 !important; z-index: 99950 !important;',
+      '  background: rgba(2, 6, 23, 0.78) !important; backdrop-filter: blur(4px) !important;',
+      '  align-items: center !important; justify-content: center !important; padding: 14px !important;',
+      '}',
+      'html.is-mob-ui-v10 #mobTtsOptionModalBackdrop.open {',
+      '  display: flex !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-tts-modal-card {',
+      '  width: 100% !important; max-width: 440px !important; max-height: 86vh !important; overflow-y: auto !important;',
+      '  background: #0f172a !important; border: 1px solid #38bdf8 !important; border-radius: 16px !important;',
+      '  padding: 14px !important; box-shadow: 0 20px 50px rgba(0,0,0,0.7) !important; color: #f1f5f9 !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-tts-modal-hdr {',
+      '  display: flex !important; align-items: center !important; justify-content: space-between !important;',
+      '  padding-bottom: 10px !important; margin-bottom: 10px !important; border-bottom: 1px solid #1e293b !important;',
+      '  font-size: 0.92rem !important; font-weight: 800 !important; color: #e0f2fe !important;',
+      '}',
+      'html.is-mob-ui-v10 #mobTtsOptionModalBody #v93TtsPlayerDock {',
+      '  display: flex !important; flex-direction: column !important; position: static !important;',
+      '  inset: auto !important; transform: none !important; width: 100% !important; max-width: none !important;',
+      '  margin: 0 !important; box-shadow: none !important; z-index: 1 !important;',
+      '}',
+      'html.is-mob-ui-v10 #mobTtsOptionModalBody [data-mob-hide-dock-ctrl="1"] {',
+      '  display: none !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-tts-speed-presets {',
+      '  display: grid !important; grid-template-columns: repeat(6, 1fr) !important; gap: 5px !important;',
+      '  margin-top: 10px !important; padding-top: 10px !important; border-top: 1px dashed #334155 !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-tts-spd-btn {',
+      '  background: #1e293b !important; color: #e2e8f0 !important; border: 1px solid #334155 !important;',
+      '  border-radius: 7px !important; padding: 6px 0 !important; font-size: 0.76rem !important;',
+      '  font-weight: 800 !important; cursor: pointer !important; text-align: center !important;',
+      '}',
+      'html.is-mob-ui-v10 .mob-tts-spd-btn:active { background: #0284c7 !important; color: #fff !important; }',
+      '/* 종이책 테마(☀️) 호환 */',
+      'html.is-mob-ui-v10 body.paper-theme .mob-ep-live-wrap {',
+      '  background: #fffdf8 !important; border-color: #bfb69e !important; color: #1c1917 !important;',
+      '}',
+      'html.is-mob-ui-v10 body.paper-theme .mob-ep-live-txt { color: #0f766e !important; }',
+      'html.is-mob-ui-v10 body.paper-theme [data-mob-docked-vbar="1"].is-hl-active {',
+      '  border-top-color: rgba(120, 113, 108, 0.25) !important;',
+      '}'
+    ].join('\n');
+    (doc.head || doc.documentElement).appendChild(st);
+  }
+
+  function closeMobileMenuIfOpen(doc) {
+    var hdr = doc.querySelector('header');
+    var mToggle = doc.getElementById('btnMobMenuToggle') || doc.querySelector('[data-mob-menubtn="1"]');
+    if (hdr && hdr.classList.contains('mob-menu-open') && mToggle) {
+      mToggle.click();
+    }
+  }
+
+  // 현재 스크롤/재생 위치의 회차를 읽어 '제26화' 표시 갱신
+  function updateLiveEpisodeBadge(sw) {
+    if (!sw || !sw.document) return;
+    var doc = sw.document;
+    var txtEl = doc.querySelector('.mob-ep-live-txt');
+    if (!txtEl) return;
+
+    var state = (typeof sw.__mobV10GetState === 'function') ? sw.__mobV10GetState() : { activeTabIdx: 0, tabs: [] };
+    var tab = state.tabs[state.activeTabIdx];
+    if (!tab || !tab.text || !tab.text.trim()) {
+      txtEl.textContent = '회차없음';
+      return;
+    }
+
+    var viewer = doc.getElementById('highlightViewer');
+    var vbar = doc.querySelector('[data-mob-docked-vbar="1"]');
+    var probeY = vbar ? (vbar.getBoundingClientRect().bottom + 28) : 130;
+
+    if (viewer && Array.isArray(tab.episodes) && tab.episodes.length > 0) {
+      var epSelect = vbar ? vbar.querySelector('select') : null;
+      if (epSelect && epSelect.value !== 'ALL' && epSelect.value !== '' && epSelect.value !== '-1') {
+        var selIdx = parseInt(epSelect.value, 10);
+        if (!isNaN(selIdx) && tab.episodes[selIdx]) {
+          var selEp = tab.episodes[selIdx];
+          txtEl.textContent = toShortEpBadge(selEp.title, selEp.epNum, selEp.hasExplicitHeader);
+          return;
+        }
+      }
+
+      var chips = viewer.querySelectorAll('.ep-header-chip');
+      if (chips.length > 0) {
+        var bestChip = chips[0];
+        for (var i = 0; i < chips.length; i++) {
+          var r = chips[i].getBoundingClientRect();
+          if (r.top <= probeY + 45) bestChip = chips[i];
+          else break;
+        }
+        var titleNode = bestChip.firstElementChild || bestChip;
+        txtEl.textContent = toShortEpBadge(titleNode.textContent || '', 0, false);
+        return;
+      }
+
+      var rows = viewer.querySelectorAll('.p-row[data-line]');
+      for (var j = 0; j < rows.length; j++) {
+        var rr = rows[j].getBoundingClientRect();
+        if (rr.bottom >= probeY) {
+          var gLine = parseInt(rows[j].getAttribute('data-line'), 10);
+          if (!isNaN(gLine)) {
+            for (var e = 0; e < tab.episodes.length; e++) {
+              var ep = tab.episodes[e];
+              if (gLine >= ep.startLine && gLine < ep.startLine + ep.lines.length) {
+                txtEl.textContent = toShortEpBadge(ep.title, ep.epNum, ep.hasExplicitHeader);
+                return;
+              }
+            }
+          }
+          break;
+        }
+      }
+      var firstEp = tab.episodes[0];
+      txtEl.textContent = toShortEpBadge(firstEp.title, firstEp.epNum, firstEp.hasExplicitHeader);
+      return;
+    }
+
+    txtEl.textContent = '전체';
+  }
+
+  // 상단 고정 바의 [🎧 듣기 / ⏸ 멈춤] 버튼 상태 동기화
+  function isTtsCurrentlyPlaying(sw) {
+    if (!sw || !sw.document) return false;
+    if (window.AndroidTTS && sw.__nTts) {
+      return Boolean(sw.__nTts.playing && !sw.__nTts.paused);
+    }
+    var mainBtn = sw.document.getElementById('v93BtnPlayMain');
+    if (mainBtn) {
+      return mainBtn.classList.contains('is-playing') || /일시정지|멈춤|⏸/.test(mainBtn.textContent || '');
+    }
+    return false;
+  }
+
+  function syncTopListenBtn(sw) {
+    if (!sw || !sw.document) return;
+    var btn = sw.document.querySelector('[data-mob-listen-btn="1"]');
+    if (!btn) return;
+    var playing = isTtsCurrentlyPlaying(sw);
+    btn.classList.toggle('is-tts-on', playing);
+    btn.textContent = playing ? '⏸ 멈춤' : '🎧 듣기';
+  }
+
+  // 다음 권 자동 전환 및 첫 문장부터 즉시 재생
+  function tryAdvanceToNextVolume(sw) {
+    if (!sw || !ensureLexicalBridge(sw)) return false;
+    var nextInfo = sw.__mobV10AdvanceNextTab();
+    if (!nextInfo) return false;
+
+    if (sw.__nTts) {
+      sw.__nTts.sig = '';
+      sw.__nTts.items = [];
+    }
+    updateLiveEpisodeBadge(sw);
+    if (typeof sw.showToast === 'function') {
+      sw.showToast('📚 다음 권 [' + nextInfo.name + '] 자동 재생을 시작합니다!');
+    }
+    if (typeof sw.v93TtsPlay === 'function') {
+      sw.v93TtsPlay(0, 0);
+    }
+    syncTopListenBtn(sw);
+    return true;
+  }
+
+  // TTS 함수 및 네이티브 콜백 래핑 (알림창 회차·소제목 + 다음 권 연속 재생)
+  function hookTtsFunctions(sw) {
+    if (!sw || !sw.document) return;
+    installMediaMetadataSanitizer(sw);
+
+    if (!sw.__mobManualStopBound) {
+      sw.__mobManualStopBound = true;
+      sw.document.addEventListener('pointerdown', function(e) {
+        var t = e.target && e.target.closest ? e.target.closest('button, [onclick]') : null;
+        if (t && /v93TtsStop/.test(t.getAttribute('onclick') || '')) {
+          manualStopTs = Date.now();
+        }
+      }, true);
+    }
+
+    if (typeof sw.v93TtsPlay === 'function' && !sw.v93TtsPlay._v10Wrapped) {
+      var origPlay = sw.v93TtsPlay;
+      var wrappedPlay = function() {
+        var r = origPlay.apply(this, arguments);
+        setTimeout(function() {
+          syncCurrentEpisodeNotification(sw);
+          syncTopListenBtn(sw);
+          updateLiveEpisodeBadge(sw);
+        }, 30);
+        return r;
+      };
+      wrappedPlay._v10Wrapped = true;
+      sw.v93TtsPlay = wrappedPlay;
+    }
+
+    if (typeof sw.v93TtsPause === 'function' && !sw.v93TtsPause._v10Wrapped) {
+      var origPause = sw.v93TtsPause;
+      var wrappedPause = function() {
+        var r = origPause.apply(this, arguments);
+        syncTopListenBtn(sw);
+        return r;
+      };
+      wrappedPause._v10Wrapped = true;
+      sw.v93TtsPause = wrappedPause;
+    }
+
+    if (typeof sw.v93TtsStop === 'function' && !sw.v93TtsStop._v10Wrapped) {
+      var origStop = sw.v93TtsStop;
+      var wrappedStop = function(isNaturalOrSilent) {
+        var wasPlaying = isTtsCurrentlyPlaying(sw);
+        var r = origStop.apply(this, arguments);
+        syncTopListenBtn(sw);
+        document.title = savedBaseTitle;
+
+        if (!window.AndroidTTS && isNaturalOrSilent === true && wasPlaying && (Date.now() - manualStopTs > 900)) {
+          tryAdvanceToNextVolume(sw);
+        }
+        return r;
+      };
+      wrappedStop._v10Wrapped = true;
+      sw.v93TtsStop = wrappedStop;
+    }
+
+    if (window.AndroidTTS && typeof window.onNativeTtsIndex === 'function' && !window.onNativeTtsIndex._v10Wrapped) {
+      var origOnIdx = window.onNativeTtsIndex;
+      var wrappedOnIdx = function(loc) {
+        var r = origOnIdx.apply(this, arguments);
+        syncCurrentEpisodeNotification(sw);
+        updateLiveEpisodeBadge(sw);
+        syncTopListenBtn(sw);
+        return r;
+      };
+      wrappedOnIdx._v10Wrapped = true;
+      window.onNativeTtsIndex = wrappedOnIdx;
+    }
+
+    if (window.AndroidTTS && typeof window.onNativeTtsDone === 'function' && !window.onNativeTtsDone._v10Wrapped) {
+      var origOnDone = window.onNativeTtsDone;
+      var wrappedOnDone = function() {
+        var st = sw.__nTts;
+        if (st && st.playing && !st.paused && (Date.now() - st.t0 > 180) && (st.off + st.len >= st.items.length)) {
+          if (tryAdvanceToNextVolume(sw)) return;
+        }
+        var r = origOnDone.apply(this, arguments);
+        syncTopListenBtn(sw);
+        document.title = savedBaseTitle;
+        return r;
+      };
+      wrappedOnDone._v10Wrapped = true;
+      window.onNativeTtsDone = wrappedOnDone;
+    }
+  }
+
+  function syncCurrentEpisodeNotification(sw) {
+    if (!sw || !sw.document) return;
+    var tab = (typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
+    var tabName = tab ? tab.name : '';
+
+    if (window.AndroidTTS && sw.__nTts && sw.__nTts.items && sw.__nTts.items[sw.__nTts.cur]) {
+      var it = sw.__nTts.items[sw.__nTts.cur];
+      applyCleanNotificationMeta(sw, it.epTitle, tabName);
+      return;
+    }
+
+    var activeRow = sw.document.querySelector('#highlightViewer .v93-tts-row-active[data-line]');
+    if (activeRow && tab && Array.isArray(tab.episodes)) {
+      var lIdx = parseInt(activeRow.getAttribute('data-line'), 10);
+      if (!isNaN(lIdx)) {
+        for (var i = 0; i < tab.episodes.length; i++) {
+          var ep = tab.episodes[i];
+          if (lIdx >= ep.startLine && lIdx < ep.startLine + ep.lines.length) {
+            applyCleanNotificationMeta(sw, ep.title, tabName);
+            return;
+          }
+        }
+      }
+    }
+
+    var epEl = sw.document.getElementById('v93StatusEp');
+    if (epEl && epEl.textContent) {
+      applyCleanNotificationMeta(sw, epEl.textContent, tabName);
+    }
+  }
+
+  // 모바일 UI 레이아웃 조립 (상단 바 압축 + 고정 뷰어 바 + 듣기 설정 모달 분리)
+  function applyMobileLayout(sw) {
+    if (!sw || !sw.document || !sw.document.body) return;
+    var doc = sw.document;
+    var mob = isMobileStudio(sw);
+
+    document.documentElement.classList.toggle('is-mob-ui-v10', mob);
+    doc.documentElement.classList.toggle('is-mob-ui-v10', mob);
+    if (!mob) return;
+
+    ensureInnerStyles(sw);
+    ensureLexicalBridge(sw);
+    hookTtsFunctions(sw);
+
+    // 1. '뷰어 본문 검색' 박스 숨김
+    var inputs = doc.querySelectorAll('input');
+    for (var i = 0; i < inputs.length; i++) {
+      var inp = inputs[i];
+      if (inp.id === 'cardSearchInput' || inp.classList.contains('v98-search-input')) continue;
+      var ph = (inp.getAttribute('placeholder') || '').trim();
+      if (/뷰어\s*본문\s*검색|본문\s*검색/.test(ph)) {
+        var box = inp.parentElement;
+        while (box && box.parentElement && box.parentElement.id !== 'tabHighlight' && box.parentElement !== doc.body) {
+          if (box.parentElement.querySelector('#highlightViewer, #v92RadarBriefingBar')) break;
+          box = box.parentElement;
+        }
+        if (box && !box.querySelector('#highlightViewer')) {
+          box.setAttribute('data-mob-hide-vsearch', '1');
+        }
+      }
+    }
+
+    // 2. 상단 2·3번째 줄을 1줄([현재 탭] [취소] [메뉴])로 통합 + [TXT열기·자동치환·간격정리] 메뉴 이동
+    var mToggle = doc.getElementById('btnMobMenuToggle');
+    if (!mToggle) {
+      var hdrBtns = doc.querySelectorAll('header button');
+      for (var hb = 0; hb < hdrBtns.length; hb++) {
+        if (/☰\s*메뉴|^메뉴$/.test((hdrBtns[hb].textContent || '').trim())) {
+          mToggle = hdrBtns[hb];
+          mToggle.setAttribute('data-mob-menubtn', '1');
+          break;
+        }
+      }
+    }
+
+    var menuDrawer = doc.querySelector('header > .btn-row') || doc.querySelector('header .btn-row');
+    var rowB2 = (mToggle && !mToggle.hasAttribute('data-mob-moved-menu')) ? mToggle.parentElement : doc.querySelector('[data-mob-empty-row2="1"]');
+    var rowB1 = doc.querySelector('[data-mob-compressed-row1="1"]') || (rowB2 ? rowB2.previousElementSibling : null);
+
+    if (rowB1 && rowB2 && rowB1 !== menuDrawer) {
+      rowB1.setAttribute('data-mob-compressed-row1', '1');
+      rowB2.setAttribute('data-mob-empty-row2', '1');
+
+      var r1Kids = Array.prototype.slice.call(rowB1.children);
+      var undoBtn = null;
+      for (var k = 0; k < r1Kids.length; k++) {
+        var ch = r1Kids[k];
+        if (ch === mToggle) continue;
+        var chTxt = (ch.textContent || '').trim();
+        if (ch.tagName === 'SELECT' || (!undoBtn && k === 0 && !/PC\s*모드|취소/i.test(chTxt))) {
+          ch.setAttribute('data-mob-top-tabsel', '1');
+        } else if (ch.tagName !== 'SELECT' && /PC\s*모드/i.test(chTxt)) {
+          ch.setAttribute('data-mob-hide-pc', '1');
+        } else if (ch.tagName !== 'SELECT' && /취소/.test(chTxt)) {
+          ch.setAttribute('data-mob-top-undo', '1');
+          undoBtn = ch;
+        }
+      }
+
+      if (mToggle && mToggle.parentElement !== rowB1) {
+        mToggle.setAttribute('data-mob-moved-menu', '1');
+        if (undoBtn && undoBtn.nextSibling) rowB1.insertBefore(mToggle, undoBtn.nextSibling);
+        else rowB1.appendChild(mToggle);
+      }
+
+      if (menuDrawer) {
+        var quickGrid = doc.getElementById('mobMenuQuickToolsGrid');
+        if (!quickGrid) {
+          quickGrid = doc.createElement('div');
+          quickGrid.id = 'mobMenuQuickToolsGrid';
+          quickGrid.addEventListener('click', function(ev) {
+            var trg = ev.target && ev.target.closest ? ev.target.closest('button, label') : null;
+            if (!trg) return;
+            var tLabel = (trg.textContent || '').trim();
+            if (/자동\s*치환|간격\s*정리/.test(tLabel)) {
+              setTimeout(function() { closeMobileMenuIfOpen(doc); }, 60);
+            }
+          });
+          quickGrid.addEventListener('change', function(ev) {
+            if (ev.target && ev.target.type === 'file') {
+              setTimeout(function() { closeMobileMenuIfOpen(doc); }, 200);
+            }
+          });
+        }
+
+        var r2Kids = Array.prototype.slice.call(rowB2.children);
+        for (var r2 = 0; r2 < r2Kids.length; r2++) {
+          var item = r2Kids[r2];
+          if (item === mToggle || item.hasAttribute('data-mob-docked-vbar')) continue;
+          quickGrid.appendChild(item);
+        }
+
+        // ☰ 메뉴 상단 배치: [클라우드바 버튼] -> [🎧 듣기 설정] -> [TXT열기 · 자동치환 · 간격정리]
+        var cloudBtn = doc.getElementById('btnMenuCloudBarToggle');
+        var ttsMenuBtn = doc.getElementById('btnMenuOpenTtsPage');
+        if (!ttsMenuBtn) {
+          ttsMenuBtn = doc.createElement('button');
+          ttsMenuBtn.type = 'button';
+          ttsMenuBtn.id = 'btnMenuOpenTtsPage';
+          ttsMenuBtn.innerHTML = '🎧 듣기 설정 (배속 · 성우 · 이어듣기)';
+          ttsMenuBtn.onclick = function(ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            closeMobileMenuIfOpen(doc);
+            var modal = doc.getElementById('mobTtsOptionModalBackdrop');
+            if (modal) modal.classList.add('open');
+          };
+        }
+
+        if (cloudBtn && cloudBtn.parentElement === menuDrawer) {
+          if (cloudBtn.nextElementSibling !== ttsMenuBtn) {
+            cloudBtn.insertAdjacentElement('afterend', ttsMenuBtn);
+          }
+        } else if (menuDrawer.firstElementChild !== ttsMenuBtn) {
+          menuDrawer.insertBefore(ttsMenuBtn, menuDrawer.firstElementChild);
+        }
+
+        if (ttsMenuBtn.nextElementSibling !== quickGrid) {
+          ttsMenuBtn.insertAdjacentElement('afterend', quickGrid);
+        }
+
+        // 메뉴 서랍 안의 중복 데스크톱 버튼 정리
+        var mItems = Array.prototype.slice.call(menuDrawer.children);
+        for (var mi = 0; mi < mItems.length; mi++) {
+          var mEl = mItems[mi];
+          if (mEl === cloudBtn || mEl === ttsMenuBtn || mEl === quickGrid || mEl.id === 'btnMenuToggleOnlyIssues') continue;
+          var mTxt = (mEl.textContent || '').replace(/\s+/g, '');
+          if (/(텍스트열기|TXT열기|파일열기|자동치환|일괄자동치환|간격정리|실행취소)/.test(mTxt)) {
+            mEl.setAttribute('data-mob-dup-menuitem', '1');
+          }
+        }
+      }
+    }
+
+    // 3. 뷰어 도구 바 상단 고정 + 회차 실시간 표시 + 오류 버튼 분리 + 듣기 즉시 토글
+    var dockedBar = doc.querySelector('[data-mob-docked-vbar="1"]');
+    if (!dockedBar) {
+      var allBtns = doc.querySelectorAll('#tabHighlight button, button');
+      var fontMinusBtn = null;
+      for (var fb = 0; fb < allBtns.length; fb++) {
+        if ((allBtns[fb].textContent || '').trim() === '가-') {
+          fontMinusBtn = allBtns[fb];
+          break;
+        }
+      }
+      if (fontMinusBtn) {
+        var cand = fontMinusBtn.parentElement;
+        while (cand && cand.parentElement && cand.id !== 'tabHighlight' && !cand.querySelector('#highlightViewer')) {
+          if (cand.querySelector('select')) {
+            dockedBar = cand;
+            break;
+          }
+          cand = cand.parentElement;
+        }
+        if (dockedBar) dockedBar.setAttribute('data-mob-docked-vbar', '1');
+      }
+    }
+
+    if (dockedBar) {
+      var epSel = dockedBar.querySelector('select');
+      if (epSel && !epSel.parentElement.classList.contains('mob-ep-live-wrap')) {
+        var wrap = doc.createElement('div');
+        wrap.className = 'mob-ep-live-wrap';
+        wrap.innerHTML = '<span class="mob-ep-live-txt">전체</span><span class="mob-ep-live-arrow">▾</span>';
+        epSel.parentNode.insertBefore(wrap, epSel);
+        wrap.appendChild(epSel);
+        epSel.addEventListener('change', function() {
+          setTimeout(function() { updateLiveEpisodeBadge(sw); }, 40);
+        });
+      }
+
+      var barKids = Array.prototype.slice.call(dockedBar.children);
+      for (var bk = 0; bk < barKids.length; bk++) {
+        var bEl = barKids[bk];
+        if (bEl.tagName === 'SELECT' || bEl.classList.contains('mob-ep-live-wrap')) continue;
+        var bTxt = (bEl.textContent || '').trim();
+        if (bTxt.length <= 16 && (/오류/.test(bTxt) || bEl.querySelector('#onlyIssuesToggle'))) {
+          bEl.setAttribute('data-mob-hide-errbtn', '1');
+          if (menuDrawer && !doc.getElementById('btnMenuToggleOnlyIssues')) {
+            var errMenuBtn = doc.createElement('button');
+            errMenuBtn.type = 'button';
+            errMenuBtn.id = 'btnMenuToggleOnlyIssues';
+            errMenuBtn.className = 'btn btn-sm';
+            errMenuBtn.style.cssText = 'flex: 1 1 100% !important; font-weight: 700 !important;';
+            errMenuBtn.textContent = '🔥 오류 문단만 보기 전환';
+            errMenuBtn.onclick = function(ev) {
+              ev.preventDefault();
+              bEl.click();
+              closeMobileMenuIfOpen(doc);
+            };
+            var qg = doc.getElementById('mobMenuQuickToolsGrid');
+            if (qg) qg.insertAdjacentElement('afterend', errMenuBtn);
+          }
+        } else if (bTxt.length <= 16 && /듣기|낭독|멈춤|일시정지/.test(bTxt)) {
+          bEl.setAttribute('data-mob-listen-btn', '1');
+          if (!bEl.__mobListenBound) {
+            bEl.__mobListenBound = true;
+            bEl.addEventListener('click', function(ev) {
+              if (!isMobileStudio(sw)) return;
+              ev.preventDefault();
+              ev.stopPropagation();
+              ev.stopImmediatePropagation();
+              if (typeof sw.v93TtsTogglePlayPause === 'function') sw.v93TtsTogglePlayPause();
+              else if (typeof sw.v93TtsPlay === 'function') sw.v93TtsPlay();
+              setTimeout(function() { syncTopListenBtn(sw); }, 30);
+            }, true);
+          }
+        }
+      }
+
+      if (rowB1 && rowB1.parentElement && dockedBar.parentElement !== rowB1.parentElement) {
+        rowB1.parentElement.appendChild(dockedBar);
+      }
+
+      var hlTab = doc.getElementById('tabHighlight');
+      var isHlActive = !hlTab || hlTab.classList.contains('active');
+      dockedBar.classList.toggle('is-hl-active', isHlActive);
+    }
+
+    // 4. 하단 듣기설정창(#v93TtsPlayerDock)을 전용 모달 페이지로 격리 이동
+    var dock = doc.getElementById('v93TtsPlayerDock');
+    if (dock) {
+      var modalBackdrop = doc.getElementById('mobTtsOptionModalBackdrop');
+      if (!modalBackdrop) {
+        modalBackdrop = doc.createElement('div');
+        modalBackdrop.id = 'mobTtsOptionModalBackdrop';
+        modalBackdrop.innerHTML =
+          '<div class="mob-tts-modal-card">' +
+            '<div class="mob-tts-modal-hdr">' +
+              '<span>🎧 오디오북 듣기 설정</span>' +
+              '<button type="button" class="btn btn-xs" id="btnCloseMobTtsModal">✕ 닫기</button>' +
+            '</div>' +
+            '<div id="mobTtsOptionModalBody"></div>' +
+            '<div class="mob-tts-speed-presets">' +
+              '<button type="button" class="mob-tts-spd-btn" data-spd="0.8">0.8x</button>' +
+              '<button type="button" class="mob-tts-spd-btn" data-spd="1.0">1.0x</button>' +
+              '<button type="button" class="mob-tts-spd-btn" data-spd="1.2">1.2x</button>' +
+              '<button type="button" class="mob-tts-spd-btn" data-spd="1.4">1.4x</button>' +
+              '<button type="button" class="mob-tts-spd-btn" data-spd="1.6">1.6x</button>' +
+              '<button type="button" class="mob-tts-spd-btn" data-spd="2.0">2.0x</button>' +
+            '</div>' +
+          '</div>';
+        modalBackdrop.addEventListener('click', function(ev) {
+          if (ev.target === modalBackdrop || (ev.target && ev.target.id === 'btnCloseMobTtsModal')) {
+            modalBackdrop.classList.remove('open');
+            return;
+          }
+          var spdBtn = ev.target && ev.target.closest ? ev.target.closest('[data-spd]') : null;
+          if (spdBtn && typeof sw.v93ChangeSpeed === 'function') {
+            sw.v93ChangeSpeed(parseFloat(spdBtn.getAttribute('data-spd')), true);
+          }
+        });
+        doc.body.appendChild(modalBackdrop);
+      }
+
+      var modalBody = doc.getElementById('mobTtsOptionModalBody');
+      if (modalBody && dock.parentElement !== modalBody) {
+        modalBody.appendChild(dock);
+        dock.classList.add('open');
+
+        var dBtns = dock.querySelectorAll('button');
+        for (var db = 0; db < dBtns.length; db++) {
+          var dbTxt = (dBtns[db].textContent || '').trim();
+          if (/펼치기/.test(dbTxt)) {
+            try { dBtns[db].click(); } catch (e) {}
+            dBtns[db].setAttribute('data-mob-hide-dock-ctrl', '1');
+          } else if (/^(✕|×|닫기)$/.test(dbTxt)) {
+            dBtns[db].setAttribute('data-mob-hide-dock-ctrl', '1');
+          }
+        }
+      }
+    }
+
+    // 스크롤 시 실시간 회차 갱신 바인딩
+    if (!sw.__mobScrollSpyBound) {
+      sw.__mobScrollSpyBound = true;
+      var rafPending = false;
+      var onScroll = function() {
+        if (rafPending) return;
+        rafPending = true;
+        sw.requestAnimationFrame(function() {
+          rafPending = false;
+          updateLiveEpisodeBadge(sw);
+        });
+      };
+      sw.addEventListener('scroll', onScroll, { passive: true, capture: true });
+      doc.addEventListener('scroll', onScroll, { passive: true, capture: true });
+    }
+
+    updateLiveEpisodeBadge(sw);
+    syncTopListenBtn(sw);
+  }
+
+  var prevBridgeReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    if (typeof prevBridgeReady === 'function') prevBridgeReady.apply(this, arguments);
+    applyMobileLayout(sw);
+    setTimeout(function() { applyMobileLayout(sw); }, 250);
+    setTimeout(function() { applyMobileLayout(sw); }, 600);
+  };
+
+  setInterval(function() {
+    var sw = getStudioWin();
+    if (sw) applyMobileLayout(sw);
+  }, 650);
+
+  setTimeout(function() {
+    var sw = getStudioWin();
+    if (sw) applyMobileLayout(sw);
+  }, 200);
+})();
+</script>
+<!-- ===== [/모바일 전용 통합 패치 끝] ===== -->
+</body>
+</html>
