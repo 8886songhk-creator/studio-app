@@ -4650,13 +4650,32 @@
 </script>
 <!-- ===== [/구글 드라이브 .txt 자동반영 + 안전한 앱 텍스트 전체삭제(원본보호) 통합 패치 V2 끝] ===== -->
  
-<!-- 구글 드라이브 자동 동기화 브릿지 -->
+<!-- 구글 드라이브 자동 동기화 브릿지 (방화벽 호환 패치판) -->
 <script>
 (function() {
   var GAS_KEY = 'magyo_gdrive_webapp_url_v1';
+  var HASH_KEY = 'magyo_gdrive_synced_hashes_v1';
 
   function getGasUrl() {
     return (localStorage.getItem(GAS_KEY) || '').trim();
+  }
+
+  function loadHashes() {
+    try { return JSON.parse(localStorage.getItem(HASH_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+
+  function saveHashes(obj) {
+    try { localStorage.setItem(HASH_KEY, JSON.stringify(obj)); } catch (e) {}
+  }
+
+  function quickHash(str) {
+    var s = String(str || '').replace(/\r\n/g, '\n');
+    var h = 2166136261;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(36) + '_' + s.length;
   }
 
   window.setupGoogleDriveUrl = function() {
@@ -4669,75 +4688,138 @@
     var trimmed = input.trim();
     if (!trimmed) {
       localStorage.removeItem(GAS_KEY);
+      localStorage.removeItem(HASH_KEY);
       updateDriveBtnUI();
       alert('구글 드라이브 연동 주소가 해제되었습니다.');
       return false;
     }
     if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/i.test(trimmed)) {
-      alert('주소 형식이 다릅니다!\n앱스 스크립트 우측 상단 [배포 - 새 배포 - 웹 앱] 완료 후 나오는 /exec 로 끝나는 웹 앱 URL을 넣어주세요.');
+      alert('주소 형식이 다릅니다!\n앱스 스크립트 [배포 - 새 배포 - 웹 앱] 완료 후 나오는 /exec 로 끝나는 주소를 넣어주세요.');
       return false;
+    }
+    if (trimmed !== cur) {
+      localStorage.removeItem(HASH_KEY);
     }
     localStorage.setItem(GAS_KEY, trimmed);
     updateDriveBtnUI();
-    alert('구글 드라이브 연결 완료! 이제 [서버 저장]을 누르면 드라이브 원고도 즉시 업데이트됩니다.');
+    alert('구글 드라이브 연결 완료! 이제 [서버 저장]을 누르면 드라이브 원고가 업데이트됩니다.');
     return true;
   };
 
-  function collectStudioTabs() {
+  function collectStudioState() {
     var ifr = document.getElementById('studioFrame');
     var w = ifr && ifr.contentWindow;
-    if (!w) return [];
+    if (!w) return { activeTabIdx: 0, tabs: [] };
     try {
+      if (typeof w.eval === 'function') {
+        var res = w.eval(
+          '(function(){' +
+          '  if (typeof activeEditingLineIdx !== "undefined" && activeEditingLineIdx !== null && typeof saveInlineEdit === "function") {' +
+          '    saveInlineEdit(activeEditingLineIdx);' +
+          '  }' +
+          '  var ta = document.getElementById("masterText");' +
+          '  var aIdx = typeof activeTabIdx === "number" ? activeTabIdx : 0;' +
+          '  if (ta && document.activeElement === ta && typeof fileTabs !== "undefined" && fileTabs[aIdx]) {' +
+          '    fileTabs[aIdx].text = ta.value;' +
+          '  }' +
+          '  var list = (typeof fileTabs !== "undefined" && Array.isArray(fileTabs)) ? fileTabs.map(function(t){' +
+          '    return { id: t.id, name: t.name || "", text: String(t.text || ""), hadCrlf: t.hadCrlf !== false, unlinked: Boolean(t._driveUnlinked) };' +
+          '  }) : [];' +
+          '  return { activeTabIdx: aIdx, tabs: list };' +
+          '})()'
+        );
+        if (res && Array.isArray(res.tabs)) return res;
+      }
       if (typeof w.__cloudGetWorkspace === 'function') {
         var ws = w.__cloudGetWorkspace();
-        if (ws && Array.isArray(ws.tabs)) return ws.tabs;
-      }
-      if (typeof w.eval === 'function') {
-        return w.eval('(typeof fileTabs !== "undefined" ? fileTabs.map(function(t){return {id:t.id,name:t.name,text:t.text||"",hadCrlf:t.hadCrlf!==false};}) : [])') || [];
+        if (ws && Array.isArray(ws.tabs)) return ws;
       }
     } catch (e) {}
-    return [];
+    return { activeTabIdx: 0, tabs: [] };
   }
 
   async function syncTabsToGoogleDrive(silent) {
     var gasUrl = getGasUrl();
     if (!gasUrl) {
       if (!silent) {
-        var ok = window.setupGoogleDriveUrl();
-        if (!ok) return;
+        if (!window.setupGoogleDriveUrl()) return;
         gasUrl = getGasUrl();
       } else {
         return;
       }
     }
 
-    var allTabs = collectStudioTabs();
-    var validTabs = allTabs.filter(function(t) {
-      return t && t.name && String(t.text || '').trim().length > 0;
+    var state = collectStudioState();
+    var validTabs = [];
+    state.tabs.forEach(function(t, idx) {
+      var cleanName = String(t.name || '').trim();
+      var cleanText = String(t.text || '').trim();
+      if (!cleanName || !cleanText || t.unlinked) return;
+      if (/^원고없음(?:\.(?:txt|md))?$/i.test(cleanName)) return;
+      validTabs.push({ tab: t, isActive: idx === state.activeTabIdx });
     });
     if (validTabs.length === 0) return;
 
+    var hashes = loadHashes();
+    var targets = validTabs.filter(function(item) {
+      var key = gasUrl + '|' + item.tab.name;
+      return hashes[key] !== quickHash(item.tab.text);
+    });
+
+    if (targets.length === 0 && !silent) {
+      var activeItem = validTabs.find(function(item) { return item.isActive; }) || validTabs[0];
+      if (activeItem) targets = [activeItem];
+    }
+    if (targets.length === 0) return;
+
     var statusEl = document.getElementById('cloudStatusText');
-    if (statusEl) statusEl.textContent = '구글 드라이브 원고 업데이트 중...';
+    var savedCount = 0;
+    var lastStamp = '';
 
     try {
-      var res = await fetch(gasUrl, {
-        method: 'POST',
-        redirect: 'follow',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'save', tabs: validTabs })
-      });
-      var data = await res.json();
-      if (!data || !data.ok) {
-        throw new Error((data && data.error) ? data.error : '드라이브 응답 오류');
+      for (var i = 0; i < targets.length; i++) {
+        var t = targets[i].tab;
+        if (statusEl) {
+          statusEl.textContent = '구글 드라이브 저장 중 (' + (i + 1) + '/' + targets.length + '): ' + t.name;
+        }
+        var norm = String(t.text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        var outContent = (t.hadCrlf !== false) ? norm.replace(/\n/g, '\r\n') : norm;
+
+        var res = await fetch(gasUrl, {
+          method: 'POST',
+          redirect: 'follow',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'save',
+            fileName: t.name,
+            content: outContent
+          })
+        });
+
+        var rawTxt = await res.text();
+        var data = null;
+        try {
+          data = JSON.parse(rawTxt);
+        } catch (parseErr) {
+          throw new Error('앱스 스크립트 응답 오류입니다. [배포 - 새 배포 - 모든 사용자] 설정 및 권한 승인을 확인해 주세요.');
+        }
+        if (!data || !data.ok) {
+          throw new Error((data && data.error) ? data.error : '드라이브 응답 오류');
+        }
+
+        hashes[gasUrl + '|' + t.name] = quickHash(t.text);
+        saveHashes(hashes);
+        savedCount++;
+        lastStamp = data.savedAtKr || lastStamp;
       }
-      var stamp = data.savedAtKr || new Date().toLocaleString('ko-KR', { hour12: false });
+
+      var stamp = lastStamp || new Date().toLocaleString('ko-KR', { hour12: false });
       if (statusEl) {
-        statusEl.textContent = '서버 + 구글드라이브 저장 완료 (' + data.savedCount + '개 파일 · ' + stamp + ')';
+        statusEl.textContent = '서버 + 구글드라이브 저장 완료 (' + savedCount + '개 파일 · ' + stamp + ')';
       }
       var ifr = document.getElementById('studioFrame');
       if (!silent && ifr && ifr.contentWindow && typeof ifr.contentWindow.showToast === 'function') {
-        ifr.contentWindow.showToast('📂 구글 드라이브 원고 ' + data.savedCount + '개 파일 업데이트 완료!');
+        ifr.contentWindow.showToast('📂 구글 드라이브 원고 ' + savedCount + '개 파일 업데이트 완료!');
       }
     } catch (err) {
       if (statusEl) statusEl.textContent = '드라이브 저장 오류: ' + err.message;
@@ -4776,14 +4858,6 @@
       };
       wrapped._gdriveHooked = true;
       window.saveToCloudFromStudio = wrapped;
-    } else if (!window._gdriveClickBound) {
-      window._gdriveClickBound = true;
-      document.addEventListener('click', function(e) {
-        var btn = e.target && e.target.closest ? e.target.closest('button') : null;
-        if (btn && (btn.classList.contains('save') || (btn.textContent || '').indexOf('서버 저장') !== -1)) {
-          syncTabsToGoogleDrive(false);
-        }
-      }, true);
     }
   }
 
