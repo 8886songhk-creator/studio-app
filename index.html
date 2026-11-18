@@ -4989,6 +4989,785 @@
 </script>
 <!-- ===== [/클라우드 바 버튼 '☰ 메뉴' 탭 내부 이동 패치 끝] ===== -->
 
+<style id="wuxia-helper-style">
+  /* 1. 상하단 잘림 및 바깥 화면 들썩임 방지 */
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+    overscroll-behavior: none !important;
+  }
+  .h-screen {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+  }
+
+  /* 2. 음성 패널 접어두기 시 음성은 유지하고 패널 영역만 축소 */
+  [data-wuxia-tts-folded="1"] {
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-width: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+
+  /* 3. 독립 오버레이 레이어 (React 렌더링과 충돌 방지) */
+  #wuxia-helper-layer {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2147483640;
+    font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Malgun Gothic", sans-serif;
+  }
+
+  #wuxia-fold-btn {
+    position: fixed;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    color: #38bdf8;
+    border: 1.5px solid #38bdf8;
+    border-radius: 8px;
+    padding: 0 10px;
+    height: 34px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    pointer-events: auto;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  }
+  #wuxia-fold-btn:active {
+    background: #1e293b;
+  }
+
+  /* 4. 접었을 때 하단에 뜨는 1줄 미니 음성 바 */
+  #wuxia-tts-minibar {
+    position: fixed;
+    left: 10px;
+    right: 10px;
+    bottom: 58px;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    background: rgba(15, 23, 42, 0.97);
+    border: 1.5px solid #38bdf8;
+    border-radius: 12px;
+    padding: 8px 10px;
+    pointer-events: auto;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+  }
+  .wuxia-mini-text {
+    flex: 1;
+    min-width: 0;
+    color: #f1f5f9;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .wuxia-mini-btn {
+    background: #1e293b;
+    color: #f8fafc;
+    border: 1px solid #38bdf8;
+    border-radius: 8px;
+    padding: 5px 9px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .wuxia-mini-close {
+    border-color: #475569;
+    color: #94a3b8;
+  }
+
+  /* 5. 회차 검색 패널 */
+  #wuxia-ep-modal {
+    position: fixed;
+    top: 88px;
+    left: 10px;
+    right: 10px;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    background: #0f172a;
+    border: 1.5px solid #38bdf8;
+    border-radius: 14px;
+    padding: 12px;
+    pointer-events: auto;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.75);
+  }
+  .wuxia-ep-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #wuxia-ep-input {
+    flex: 1;
+    min-width: 0;
+    background: #1e293b;
+    color: #f8fafc;
+    border: 1px solid #475569;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 14px;
+    outline: none;
+  }
+  #wuxia-ep-input:focus {
+    border-color: #38bdf8;
+  }
+  .wuxia-ep-action {
+    background: #0284c7;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .wuxia-ep-close {
+    background: #1e293b;
+    color: #cbd5e1;
+    border: 1px solid #475569;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #wuxia-ep-list {
+    max-height: 230px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-top: 1px solid #1e293b;
+    padding-top: 6px;
+  }
+  .wuxia-ep-item {
+    background: #1e293b;
+    color: #e2e8f0;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .wuxia-ep-item:active, .wuxia-ep-item:hover {
+    border-color: #38bdf8;
+    background: #0f172a;
+  }
+  .wuxia-ep-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: #94a3b8;
+  }
+  .wuxia-ep-subbtn {
+    background: transparent;
+    color: #38bdf8;
+    border: none;
+    font-size: 12px;
+    padding: 2px 4px;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+  @keyframes wuxiaEpPulse {
+    0% { box-shadow: 0 0 0 2px #38bdf8, 0 0 16px rgba(56, 189, 248, 0.7); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .wuxia-ep-highlight {
+    animation: wuxiaEpPulse 1.6s ease-out;
+    border-radius: 8px;
+  }
+</style>
+
+<script>
+(function () {
+  'use strict';
+  if (window.__wuxiaAllInOneLoaded) return;
+  window.__wuxiaAllInOneLoaded = true;
+
+  let isTtsFolded = false;
+  let allowNativeSearchOnce = false;
+
+  // 1. 상단 '8' 같은 실수 텍스트 노드 자동 제거
+  function cleanStrayTextNodes() {
+    [document.body, document.head].forEach(root => {
+      if (!root) return;
+      Array.from(root.childNodes).forEach(node => {
+        if (node.nodeType === Node.TEXT_NODE && node.nodeValue && node.nodeValue.trim() !== '') {
+          node.nodeValue = '';
+        }
+      });
+    });
+  }
+
+  // 2. 오버레이 UI 생성
+  function ensureOverlay() {
+    let layer = document.getElementById('wuxia-helper-layer');
+    if (layer) return layer;
+    if (!document.body) return null;
+
+    layer = document.createElement('div');
+    layer.id = 'wuxia-helper-layer';
+    layer.innerHTML = `
+      <button type="button" id="wuxia-fold-btn">🔽 접기</button>
+      <div id="wuxia-tts-minibar">
+        <div class="wuxia-mini-text" id="wuxia-mini-status">🔊 음성 대기 중...</div>
+        <button type="button" class="wuxia-mini-btn" id="wuxia-mini-toggle">⏯</button>
+        <button type="button" class="wuxia-mini-btn" id="wuxia-mini-unfold">🔼 펼치기</button>
+        <button type="button" class="wuxia-mini-btn wuxia-mini-close" id="wuxia-mini-close">✕</button>
+      </div>
+      <div id="wuxia-ep-modal">
+        <div class="wuxia-ep-row">
+          <input type="search" id="wuxia-ep-input" placeholder="회차 번호 또는 제목 (예: 12, 무신)" autocomplete="off" />
+          <button type="button" class="wuxia-ep-action" id="wuxia-ep-go">이동</button>
+          <button type="button" class="wuxia-ep-close" id="wuxia-ep-close">✕</button>
+        </div>
+        <div id="wuxia-ep-list"></div>
+        <div class="wuxia-ep-footer">
+          <span id="wuxia-ep-msg">회차를 터치하거나 번호를 입력하세요</span>
+          <button type="button" class="wuxia-ep-subbtn" id="wuxia-open-body-search">본문 단어검색 열기</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(layer);
+
+    // 접기 버튼 클릭
+    document.getElementById('wuxia-fold-btn').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const box = findTtsBox();
+      if (!box) return;
+      isTtsFolded = true;
+      box.setAttribute('data-wuxia-tts-folded', '1');
+      syncTtsUi();
+    });
+
+    // 미니 바 펼치기
+    const unfold = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      isTtsFolded = false;
+      const box = findTtsBox();
+      if (box) box.removeAttribute('data-wuxia-tts-folded');
+      syncTtsUi();
+    };
+    document.getElementById('wuxia-mini-status').addEventListener('click', unfold);
+    document.getElementById('wuxia-mini-unfold').addEventListener('click', unfold);
+
+    // 미니 바 재생/일시정지
+    document.getElementById('wuxia-mini-toggle').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const box = findTtsBox();
+      const playBtn = getTtsPlayBtn(box);
+      if (playBtn) playBtn.click();
+      setTimeout(syncTtsUi, 60);
+    });
+
+    // 미니 바 완전 종료(X)
+    document.getElementById('wuxia-mini-close').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const box = findTtsBox();
+      isTtsFolded = false;
+      if (box) {
+        box.removeAttribute('data-wuxia-tts-folded');
+        const closeBtn = getTtsCloseBtn(box);
+        if (closeBtn) closeBtn.click();
+      }
+      setTimeout(syncTtsUi, 60);
+    });
+
+    // 회차 검색 이벤트
+    const epInput = document.getElementById('wuxia-ep-input');
+    epInput.addEventListener('input', () => renderEpisodeList(epInput.value));
+    epInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        jumpByQuery(epInput.value);
+      }
+    });
+    document.getElementById('wuxia-ep-go').addEventListener('click', () => jumpByQuery(epInput.value));
+    document.getElementById('wuxia-ep-close').addEventListener('click', closeEpisodeModal);
+    document.getElementById('wuxia-open-body-search').addEventListener('click', () => {
+      closeEpisodeModal();
+      const searchBtn = findTopSearchButton();
+      if (searchBtn) {
+        allowNativeSearchOnce = true;
+        searchBtn.click();
+      }
+    });
+
+    return layer;
+  }
+
+  // 3. TTS 패널 및 내부 버튼 탐색
+  function findTtsBox() {
+    const folded = document.querySelector('[data-wuxia-tts-folded="1"]');
+    if (folded && document.body.contains(folded)) return folded;
+
+    const els = Array.from(document.querySelectorAll('button, [role="button"], div, span'));
+    const anchors = els.filter(el => {
+      if (el.closest('#wuxia-helper-layer')) return false;
+      const t = (el.textContent || '').trim();
+      if (!t || t.length > 36) return false;
+      return t.includes('이어듣기') || t === '▶ 듣기' || t.includes('일시정지');
+    });
+
+    for (const anchor of anchors) {
+      let cur = anchor.parentElement;
+      while (cur && cur !== document.body) {
+        const full = cur.textContent || '';
+        if (full.includes('TXT열기') || full.includes('형광펜 뷰어') || full.includes('자동치환')) break;
+
+        const withoutResume = full.replace(/이어듣기/g, '');
+        const hasTransport = withoutResume.includes('듣기') || withoutResume.includes('일시정지') || withoutResume.includes('내장') || withoutResume.includes('성우');
+        const hasBottom = full.includes('이어듣기') || full.includes('펼치기');
+        const rect = cur.getBoundingClientRect();
+
+        if (hasTransport && hasBottom && rect.height >= 65 && rect.height <= window.innerHeight * 0.75) {
+          let box = cur;
+          while (box.parentElement && box.parentElement !== document.body) {
+            const st = window.getComputedStyle(box);
+            if (parseFloat(st.borderTopWidth) > 0 && st.borderTopColor !== 'rgba(0, 0, 0, 0)' && st.borderTopColor !== 'transparent') {
+              break;
+            }
+            const p = box.parentElement;
+            const pTxt = p.textContent || '';
+            if (pTxt.includes('TXT열기') || pTxt.includes('형광펜 뷰어') || pTxt.includes('쾌속 카드')) break;
+            if (p.getBoundingClientRect().height > rect.height + 36) break;
+            box = p;
+          }
+          return box;
+        }
+        cur = cur.parentElement;
+      }
+    }
+    return null;
+  }
+
+  function getTtsPlayBtn(box) {
+    if (!box) return null;
+    const btns = Array.from(box.querySelectorAll('button, [role="button"]'));
+    return btns.find(b => {
+      const t = (b.textContent || '').trim();
+      return !t.includes('이어듣기') && (t.includes('듣기') || t.includes('일시정지') || t.includes('재생') || t.includes('멈춤'));
+    }) || null;
+  }
+
+  function getTtsCloseBtn(box) {
+    if (!box) return null;
+    const btns = Array.from(box.querySelectorAll('button, [role="button"]'));
+    const ref = btns.find(b => {
+      const t = (b.textContent || '').trim();
+      return t.includes('이어듣기') || t.includes('펼치기');
+    });
+    if (ref && ref.parentElement) {
+      const rowBtns = Array.from(ref.parentElement.querySelectorAll('button, [role="button"]'));
+      if (rowBtns.length > 0) return rowBtns[rowBtns.length - 1];
+    }
+    return btns[btns.length - 1] || null;
+  }
+
+  function getBottomTabTop() {
+    const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+    const tabBtn = btns.find(b => {
+      const t = (b.textContent || '').trim();
+      return t.includes('형광펜 뷰어') || t.includes('AI패치') || t.includes('쾌속 카드');
+    });
+    if (!tabBtn) return 56;
+    const bar = tabBtn.parentElement || tabBtn;
+    const top = bar.getBoundingClientRect().top;
+    return top > 0 ? Math.max(8, window.innerHeight - top + 6) : 56;
+  }
+
+  // 4. 내부 뷰어 전용 스크롤 (화면 들썩임 및 하단 가림 차단)
+  const origScrollIntoView = Element.prototype.scrollIntoView;
+  function scrollViewerTo(targetEl, alignMode) {
+    if (!targetEl) return;
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+
+    let scroller = targetEl.parentElement;
+    while (scroller && scroller !== document.body && scroller !== document.documentElement) {
+      const st = window.getComputedStyle(scroller);
+      if ((st.overflowY === 'auto' || st.overflowY === 'scroll' || st.overflowY === 'overlay') && scroller.scrollHeight > scroller.clientHeight + 4) {
+        break;
+      }
+      scroller = scroller.parentElement;
+    }
+
+    if (!scroller || scroller === document.body || scroller === document.documentElement) return;
+
+    const sRect = scroller.getBoundingClientRect();
+    const iRect = targetEl.getBoundingClientRect();
+
+    let coveredBottom = 0;
+    const miniBar = document.getElementById('wuxia-tts-minibar');
+    const ttsBox = findTtsBox();
+    const activeOverlay = (isTtsFolded && miniBar && miniBar.style.display !== 'none') ? miniBar
+      : (!isTtsFolded && ttsBox ? ttsBox : null);
+
+    if (activeOverlay) {
+      const oRect = activeOverlay.getBoundingClientRect();
+      if (oRect.height > 0 && oRect.top < sRect.bottom) {
+        coveredBottom = Math.max(0, sRect.bottom - oRect.top);
+      }
+    }
+
+    const visibleH = Math.max(80, sRect.height - coveredBottom);
+    const itemTop = (iRect.top - sRect.top) + scroller.scrollTop;
+
+    let targetTop;
+    if (alignMode === 'top') {
+      targetTop = itemTop - 12;
+    } else {
+      targetTop = iRect.height > visibleH * 0.65
+        ? itemTop - 14
+        : itemTop - (visibleH * 0.25);
+    }
+
+    scroller.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+  }
+
+  Element.prototype.scrollIntoView = function (arg) {
+    if (this.closest && this.closest('#wuxia-helper-layer')) {
+      return origScrollIntoView.apply(this, arguments);
+    }
+    scrollViewerTo(this, 'tts');
+  };
+
+  window.addEventListener('scroll', () => {
+    if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
+  }, { passive: true });
+
+  // 5. TTS 접기 버튼 & 미니 바 위치/상태 동기화
+  function syncTtsUi() {
+    cleanStrayTextNodes();
+    if (!ensureOverlay()) return;
+
+    const foldBtn = document.getElementById('wuxia-fold-btn');
+    const miniBar = document.getElementById('wuxia-tts-minibar');
+    const miniStatus = document.getElementById('wuxia-mini-status');
+    const miniToggle = document.getElementById('wuxia-mini-toggle');
+
+    const box = findTtsBox();
+    if (!box) {
+      isTtsFolded = false;
+      foldBtn.style.display = 'none';
+      miniBar.style.display = 'none';
+      return;
+    }
+
+    if (isTtsFolded) {
+      if (box.getAttribute('data-wuxia-tts-folded') !== '1') {
+        box.setAttribute('data-wuxia-tts-folded', '1');
+      }
+      foldBtn.style.display = 'none';
+      miniBar.style.bottom = getBottomTabTop() + 'px';
+      miniBar.style.display = 'flex';
+
+      const leaves = Array.from(box.querySelectorAll('div, p, span')).filter(el => {
+        if (el.closest('button') || el.closest('[role="button"]')) return false;
+        if (el.querySelectorAll('button, div, p').length > 0) return false;
+        const t = (el.textContent || '').trim();
+        return t.length > 0 && t !== '오프라인 내장' && t !== '내장 음성';
+      });
+      const preview = leaves.map(el => el.textContent.trim()).pop();
+      miniStatus.textContent = preview ? `🔊 ${preview}` : '🔊 음성 실행 중...';
+
+      const playBtn = getTtsPlayBtn(box);
+      if (playBtn) {
+        const pt = (playBtn.textContent || '').trim();
+        miniToggle.textContent = (pt.includes('일시정지') || pt.includes('멈춤') || pt.includes('⏸')) ? '⏸' : '▶';
+      }
+    } else {
+      box.removeAttribute('data-wuxia-tts-folded');
+      miniBar.style.display = 'none';
+
+      const boxRect = box.getBoundingClientRect();
+      if (boxRect.height < 40) {
+        foldBtn.style.display = 'none';
+        return;
+      }
+
+      const closeBtn = getTtsCloseBtn(box);
+      foldBtn.style.display = 'inline-flex';
+      const btnW = foldBtn.offsetWidth || 64;
+      const btnH = foldBtn.offsetHeight || 34;
+
+      if (closeBtn) {
+        const cRect = closeBtn.getBoundingClientRect();
+        if (boxRect.right - cRect.right >= btnW + 8) {
+          foldBtn.style.left = (cRect.right + 6) + 'px';
+          foldBtn.style.top = Math.round(cRect.top + (cRect.height - btnH) / 2) + 'px';
+          return;
+        }
+      }
+      foldBtn.style.left = (boxRect.right - btnW - 10) + 'px';
+      foldBtn.style.top = (boxRect.top + 10) + 'px';
+    }
+  }
+
+  // 6. 회차 검색 (상단 '검색' 버튼 가로채기 + 회차 스캔 + 권 탭 자동 전환)
+  function findTopSearchButton() {
+    const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+    return btns.find(b => {
+      if (b.closest('#wuxia-helper-layer')) return false;
+      const t = (b.textContent || '').replace(/\s+/g, ' ').trim();
+      return (t === '검색' || t.endsWith('검색')) && t.length <= 8 && !t.includes('본문');
+    }) || null;
+  }
+
+  function closeNativeBodySearchIfOpen() {
+    const inp = document.querySelector('input[placeholder*="본문 검색"]');
+    if (!inp) return;
+    let box = inp.parentElement;
+    while (box && box !== document.body) {
+      if ((box.textContent || '').includes('찾기') && (box.textContent || '').includes('다음')) {
+        const btns = Array.from(box.querySelectorAll('button'));
+        const closeB = btns[btns.length - 1];
+        if (closeB) closeB.click();
+        break;
+      }
+      box = box.parentElement;
+    }
+  }
+
+  function scanEpisodes() {
+    const ttsBox = findTtsBox();
+    const epRegex = /^(?:[^\w가-힣\d]*\s*)?(?:제\s*)?(\d+)\s*화(?:\s*[.:\-·)\]]|\s+|$)(.*)$/;
+    const rawMatches = [];
+
+    const nodes = document.querySelectorAll('h1, h2, h3, h4, div, p, span');
+    for (const el of nodes) {
+      if (el.closest('#wuxia-helper-layer') || el.closest('button') || el.closest('select') || el.closest('option')) continue;
+      if (ttsBox && ttsBox.contains(el)) continue;
+
+      const txt = (el.textContent || '').trim();
+      if (!txt || txt.length > 95) continue;
+      if (txt.includes('현재 탭') || txt.includes('이어듣기') || txt.includes('내장 음성') || /\d+\s*화\s*[~\-]\s*\d+\s*화/.test(txt)) continue;
+
+      const firstLine = txt.split('\n')[0].trim();
+      const m = firstLine.match(epRegex);
+      if (m) {
+        rawMatches.push({
+          num: parseInt(m[1], 10),
+          title: firstLine,
+          el
+        });
+      }
+    }
+
+    // 부모·자식 중복 제거 (가장 안쪽 제목 요소만 유지)
+    const filtered = rawMatches.filter((item, idx) =>
+      !rawMatches.some((other, oIdx) => oIdx !== idx && item.el.contains(other.el))
+    );
+
+    const seen = new Set();
+    const unique = [];
+    for (const ep of filtered) {
+      const key = ep.num + ':' + ep.title;
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(ep);
+      }
+    }
+    return unique;
+  }
+
+  function renderEpisodeList(query = '') {
+    const listEl = document.getElementById('wuxia-ep-list');
+    const msgEl = document.getElementById('wuxia-ep-msg');
+    if (!listEl) return;
+
+    const episodes = scanEpisodes();
+    const q = query.trim().toLowerCase();
+    const qNum = /^\d+$/.test(q.replace(/화$/, '')) ? parseInt(q.replace(/화$/, ''), 10) : null;
+
+    let matched = episodes.filter(ep => {
+      if (!q) return true;
+      if (qNum !== null && ep.num === qNum) return true;
+      return ep.title.toLowerCase().includes(q) || String(ep.num).includes(q);
+    });
+
+    if (qNum !== null) {
+      matched.sort((a, b) => (a.num === qNum ? -1 : b.num === qNum ? 1 : a.num - b.num));
+    }
+
+    listEl.innerHTML = '';
+    if (matched.length === 0) {
+      msgEl.textContent = qNum !== null
+        ? `[이동]을 누르면 다른 권 탭에서도 ${qNum}화를 찾습니다`
+        : '현재 탭에서 일치하는 회차가 없습니다';
+      return;
+    }
+
+    msgEl.textContent = `현재 탭 회차 ${matched.length}개`;
+    matched.forEach(ep => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'wuxia-ep-item';
+      btn.textContent = ep.title;
+      btn.addEventListener('click', () => jumpToElement(ep.el));
+      listEl.appendChild(btn);
+    });
+  }
+
+  function jumpToElement(el) {
+    closeEpisodeModal();
+    scrollViewerTo(el, 'top');
+    el.classList.remove('wuxia-ep-highlight');
+    void el.offsetWidth;
+    el.classList.add('wuxia-ep-highlight');
+  }
+
+  function switchVolumeTabForEpisode(targetNum, onSwitched) {
+    const rangeRegex = /(\d+)\s*화\s*[~\-]\s*(\d+)\s*화/;
+
+    // <select> 형태인 경우
+    const selects = Array.from(document.querySelectorAll('select'));
+    for (const sel of selects) {
+      for (const opt of Array.from(sel.options)) {
+        const m = (opt.textContent || '').match(rangeRegex);
+        if (m && targetNum >= parseInt(m[1], 10) && targetNum <= parseInt(m[2], 10)) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+          if (setter) setter.call(sel, opt.value);
+          else sel.value = opt.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          setTimeout(onSwitched, 300);
+          return true;
+        }
+      }
+    }
+
+    // 커스텀 드롭다운 버튼('현재 탭: ...') 형태인 경우
+    const tabTrigger = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .find(b => (b.textContent || '').includes('현재 탭'));
+    if (tabTrigger) {
+      tabTrigger.click();
+      setTimeout(() => {
+        const items = Array.from(document.querySelectorAll('button, [role="option"], li, div')).filter(el => {
+          if (el === tabTrigger || el.closest('#wuxia-helper-layer')) return false;
+          if (el.children.length > 3) return false;
+          const m = (el.textContent || '').match(rangeRegex);
+          return m && targetNum >= parseInt(m[1], 10) && targetNum <= parseInt(m[2], 10);
+        });
+        if (items[0]) {
+          items[0].click();
+          setTimeout(onSwitched, 300);
+        }
+      }, 100);
+      return true;
+    }
+    return false;
+  }
+
+  function jumpByQuery(rawQuery) {
+    const q = (rawQuery || '').trim();
+    if (!q) return;
+
+    const episodes = scanEpisodes();
+    const numMatch = q.match(/^제?\s*(\d+)\s*화?$/);
+    const targetNum = numMatch ? parseInt(numMatch[1], 10) : null;
+
+    if (targetNum !== null) {
+      const exact = episodes.find(ep => ep.num === targetNum);
+      if (exact) {
+        jumpToElement(exact.el);
+        return;
+      }
+      // 다른 권 탭에 있는 회차면 탭 전환 후 이동 시도
+      const switched = switchVolumeTabForEpisode(targetNum, () => {
+        const afterEps = scanEpisodes();
+        const found = afterEps.find(ep => ep.num === targetNum);
+        if (found) jumpToElement(found.el);
+      });
+      if (switched) return;
+    }
+
+    const partial = episodes.find(ep => ep.title.toLowerCase().includes(q.toLowerCase()));
+    if (partial) {
+      jumpToElement(partial.el);
+    } else {
+      const msgEl = document.getElementById('wuxia-ep-msg');
+      if (msgEl) msgEl.textContent = `'${q}' 회차를 찾지 못했습니다`;
+    }
+  }
+
+  function openEpisodeModal() {
+    ensureOverlay();
+    closeNativeBodySearchIfOpen();
+    const modal = document.getElementById('wuxia-ep-modal');
+    const input = document.getElementById('wuxia-ep-input');
+    modal.style.display = 'flex';
+    input.value = '';
+    renderEpisodeList('');
+    setTimeout(() => input.focus(), 40);
+  }
+
+  function closeEpisodeModal() {
+    const modal = document.getElementById('wuxia-ep-modal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  // 상단 '🔍 검색' 버튼 클릭을 회차 검색으로 연결
+  window.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('button, [role="button"]');
+    if (!btn || btn.closest('#wuxia-helper-layer')) return;
+
+    const txt = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+    if ((txt === '검색' || txt.endsWith('검색')) && txt.length <= 8 && !txt.includes('본문')) {
+      if (allowNativeSearchOnce) {
+        allowNativeSearchOnce = false;
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+
+      const modal = document.getElementById('wuxia-ep-modal');
+      if (modal && modal.style.display === 'flex') closeEpisodeModal();
+      else openEpisodeModal();
+    }
+  }, true);
+
+  // 7. 실시간 감지 및 주기적 동기화 실행
+  function boot() {
+    ensureOverlay();
+    syncTtsUi();
+    const obs = new MutationObserver(() => requestAnimationFrame(syncTtsUi));
+    obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    window.addEventListener('resize', syncTtsUi);
+    setInterval(syncTtsUi, 350);
+  }
+
+  if (document.body) boot();
+  else window.addEventListener('DOMContentLoaded', boot);
+})();
+</script>
 
 </body>
 </html>
