@@ -4988,5 +4988,291 @@
 })();
 </script>
 <!-- ===== [/클라우드 바 버튼 '☰ 메뉴' 탭 내부 이동 패치 끝] ===== -->
+<style>
+  /* 1. 바깥 전체 화면 들썩임 원천 차단 */
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    overflow: clip;
+    overscroll-behavior: none;
+  }
+
+  /* 2. 기존 패널 내부에 추가될 [🔽 접기] 버튼 스타일 */
+  .tts-fold-btn {
+    background: #1e293b;
+    color: #cbd5e1;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .tts-fold-btn:active {
+    background: #334155;
+  }
+
+  /* 3. 접어두기 활성화 시 기존 4줄 UI를 숨기고 1줄 미니 바로 전환 */
+  .tts-is-minimized {
+    padding: 6px 10px !important;
+    min-height: 0 !important;
+    height: auto !important;
+  }
+  .tts-is-minimized > *:not(.tts-mini-bar) {
+    display: none !important;
+  }
+
+  .tts-mini-bar {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+  .tts-is-minimized > .tts-mini-bar {
+    display: flex !important;
+  }
+
+  .tts-mini-status {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: #e2e8f0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .tts-mini-btn {
+    background: #1e293b;
+    color: #f8fafc;
+    border: 1px solid #3b82f6;
+    border-radius: 6px;
+    padding: 4px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .tts-mini-close {
+    border-color: #475569;
+    color: #94a3b8;
+  }
+</style>
+
+<script>
+(function () {
+  let isTtsMinimized = false;
+  let isSyncing = false;
+
+  // TTS 패널 자동 탐색 (고정 ID가 있다면 '#ttsPanel' 등을 첫 줄에 지정 가능)
+  function findTtsPanel() {
+    const direct = document.querySelector('#ttsPanel, .tts-panel, #ttsBox, .tts-box');
+    if (direct) return direct;
+
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const anchorBtn = buttons.find(b => {
+      const t = (b.textContent || '').trim();
+      return t.includes('이어듣기') || t.includes('펼치기');
+    });
+    if (!anchorBtn) return null;
+
+    let el = anchorBtn.parentElement;
+    while (el && el !== document.body) {
+      const txt = el.textContent || '';
+      if (txt.includes('음성') || txt.includes('듣기') || txt.includes('일시정지')) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return anchorBtn.parentElement?.parentElement || null;
+  }
+
+  // 1. scrollIntoView 가로채기: 바깥 화면은 고정하고 내부 뷰어만 스크롤
+  const origScrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (arg) {
+    let scroller = this.parentElement;
+    while (scroller && scroller !== document.body && scroller !== document.documentElement) {
+      const style = window.getComputedStyle(scroller);
+      if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && scroller.scrollHeight > scroller.clientHeight) {
+        break;
+      }
+      scroller = scroller.parentElement;
+    }
+
+    if (scroller && scroller !== document.body && scroller !== document.documentElement) {
+      const scrollerRect = scroller.getBoundingClientRect();
+      const itemRect = this.getBoundingClientRect();
+
+      // 현재 TTS 패널(펼침 또는 미니 바)이 가리는 높이만큼 여유 공간 계산
+      const ttsPanel = findTtsPanel();
+      let coveredBottom = 0;
+      if (ttsPanel && ttsPanel.offsetParent !== null) {
+        const ttsRect = ttsPanel.getBoundingClientRect();
+        if (ttsRect.top < scrollerRect.bottom && ttsRect.bottom > scrollerRect.top) {
+          coveredBottom = Math.max(0, scrollerRect.bottom - ttsRect.top);
+        }
+      }
+
+      const visibleHeight = Math.max(60, scrollerRect.height - coveredBottom);
+      const itemTop = (itemRect.top - scrollerRect.top) + scroller.scrollTop;
+      const targetTop = itemRect.height > visibleHeight - 24
+        ? itemTop - 12
+        : itemTop - (visibleHeight / 2) + (itemRect.height / 2);
+
+      const behavior = (arg && typeof arg === 'object' && arg.behavior) ? arg.behavior : 'smooth';
+      scroller.scrollTo({ top: Math.max(0, targetTop), behavior });
+
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      return;
+    }
+
+    const res = origScrollIntoView.apply(this, arguments);
+    window.scrollTo(0, 0);
+    return res;
+  };
+
+  // 2. 접어두기 버튼 및 미니 바 주입/동기화
+  function setupTtsFold() {
+    if (isSyncing) return;
+    const panel = findTtsPanel();
+    if (!panel) return;
+
+    isSyncing = true;
+    try {
+      const allBtns = Array.from(panel.querySelectorAll('button:not(.tts-mini-btn):not(.tts-fold-btn)'));
+
+      // 주 재생/일시정지 버튼 및 기존 닫기(X) 버튼 찾기
+      const origPlayBtn = allBtns.find(b => {
+        const t = (b.textContent || '').trim();
+        return !t.includes('이어듣기') && (t.includes('듣기') || t.includes('일시정지') || t.includes('멈춤') || t.includes('재생'));
+      });
+      const origCloseBtn = allBtns.find(b => {
+        const t = (b.textContent || '').trim();
+        return t === '✕' || t === '×' || t === 'X' || t === '✖' || t === '닫기';
+      });
+
+      // 하단 버튼 줄([펼치기]와 [X] 사이)에 [🔽 접기] 버튼 추가
+      if (origCloseBtn && !panel.querySelector('.tts-fold-btn')) {
+        const foldBtn = document.createElement('button');
+        foldBtn.type = 'button';
+        foldBtn.className = 'tts-fold-btn';
+        foldBtn.textContent = '🔽 접기';
+        foldBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation(); // 닫기/중지 이벤트로 전파되지 않게 차단
+          isTtsMinimized = true;
+          panel.classList.add('tts-is-minimized');
+          syncMiniBarText(panel, origPlayBtn);
+        });
+        origCloseBtn.parentElement.insertBefore(foldBtn, origCloseBtn);
+
+        // 원래 닫기(X)를 누르면 다음 실행을 위해 접힘 상태 초기화
+        origCloseBtn.addEventListener('click', () => {
+          isTtsMinimized = false;
+          panel.classList.remove('tts-is-minimized');
+        });
+      }
+
+      // 미니 플레이어 바 생성
+      let miniBar = panel.querySelector('.tts-mini-bar');
+      if (!miniBar) {
+        miniBar = document.createElement('div');
+        miniBar.className = 'tts-mini-bar';
+        miniBar.innerHTML = `
+          <div class="tts-mini-status" title="터치하여 패널 펼치기">🔊 음성 낭독 중...</div>
+          <button type="button" class="tts-mini-btn tts-mini-toggle">⏯</button>
+          <button type="button" class="tts-mini-btn tts-mini-expand">🔼 열기</button>
+          <button type="button" class="tts-mini-btn tts-mini-close">✕</button>
+        `;
+
+        const expandPanel = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          isTtsMinimized = false;
+          panel.classList.remove('tts-is-minimized');
+        };
+
+        miniBar.querySelector('.tts-mini-status').addEventListener('click', expandPanel);
+        miniBar.querySelector('.tts-mini-expand').addEventListener('click', expandPanel);
+
+        // 미니 바에서 재생/일시정지 클릭 시 원래 버튼 동작 그대로 실행
+        miniBar.querySelector('.tts-mini-toggle').addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (origPlayBtn) origPlayBtn.click();
+          setTimeout(() => syncMiniBarText(panel, origPlayBtn), 50);
+        });
+
+        // 미니 바에서 [✕] 클릭 시 원래 닫기(음성 종료) 실행
+        miniBar.querySelector('.tts-mini-close').addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          isTtsMinimized = false;
+          panel.classList.remove('tts-is-minimized');
+          if (origCloseBtn) origCloseBtn.click();
+        });
+
+        panel.appendChild(miniBar);
+      }
+
+      if (isTtsMinimized) {
+        panel.classList.add('tts-is-minimized');
+      }
+      syncMiniBarText(panel, origPlayBtn);
+    } finally {
+      isSyncing = false;
+    }
+  }
+
+  // 현재 읽는 대사 미리보기를 미니 바에 실시간 반영
+  function syncMiniBarText(panel, origPlayBtn) {
+    const statusEl = panel.querySelector('.tts-mini-status');
+    const toggleEl = panel.querySelector('.tts-mini-toggle');
+    if (!statusEl) return;
+
+    const textBlocks = Array.from(panel.children).filter(
+      el => !el.classList.contains('tts-mini-bar') && el.querySelectorAll('button').length === 0
+    );
+    const previewText = textBlocks
+      .map(el => (el.textContent || '').trim())
+      .filter(Boolean)
+      .pop();
+
+    statusEl.textContent = previewText ? `🔊 ${previewText}` : '🔊 음성 낭독 중...';
+
+    if (toggleEl && origPlayBtn) {
+      const btnTxt = (origPlayBtn.textContent || '').trim();
+      toggleEl.textContent = (btnTxt.includes('일시정지') || btnTxt.includes('멈춤') || btnTxt.includes('⏸')) ? '⏸' : '▶';
+    }
+  }
+
+  // 패널이 동적으로 열리거나 문장이 바뀔 때마다 자동 연결
+  let rafId = null;
+  const observer = new MutationObserver(() => {
+    if (isSyncing) return;
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(setupTtsFold);
+  });
+
+  if (document.body) {
+    setupTtsFold();
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  } else {
+    window.addEventListener('DOMContentLoaded', () => {
+      setupTtsFold();
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
+  }
+})();
+</script>
+
+
 </body>
 </html>
