@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Studio Cloud</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0b1120">
@@ -2286,45 +2286,40 @@
 })();
 </script>
 <!-- ==================== [/v9.7 올인원 마스터 통합 패치 끝] ==================== -->
-<!-- ===== [안드로이드 APK 내장 음성 + 상단 여백 + 모바일 터치 듣기 통합 패치] ===== -->
-<style id="apkMobileFixOuterStyle">
-  html.is-apk-app body {
-    padding-top: max(env(safe-area-inset-top, 0px), 30px) !important;
+<!-- ===== [모바일 상단 밀착(여백 제거) + 우측상단 가림 버튼 숨김 패치] ===== -->
+<style id="studioApkAllFixStyle">
+  html.is-apk-app body,
+  html.is-studio-apk body {
+    padding-top: 0px !important;
     padding-bottom: env(safe-area-inset-bottom, 0px) !important;
     background: #060b16 !important;
   }
-  html.is-apk-app #btnRestoreCloudBar {
-    top: calc(max(env(safe-area-inset-top, 0px), 30px) + 6px) !important;
+  /* 다른 버튼을 가리는 우측 상단 플로팅 버튼 영구 숨김 */
+  #btnRestoreCloudBar,
+  #btnRestoreCloudBar.show,
+  .v99-docked-collapsed,
+  .v98-search-fab {
+    display: none !important;
   }
-  .v98-search-fab { display: none !important; }
-  .v99-docked-in-bar {
+  .v99-docked-in-bar,
+  .docked-bar-pill {
     position: static !important;
     inset: auto !important;
     transform: none !important;
     display: inline-flex !important;
     align-items: center !important;
-    margin: 0 4px 0 0 !important;
+    margin: 0 !important;
     padding: 3px 8px !important;
-    height: 24px !important;
+    height: auto !important;
     font-size: 0.72rem !important;
     border-radius: 6px !important;
     box-shadow: none !important;
+    white-space: nowrap !important;
     flex-shrink: 0 !important;
     z-index: 2 !important;
   }
-  .v99-docked-collapsed {
-    position: fixed !important;
-    top: calc(max(env(safe-area-inset-top, 0px), 30px) + 6px) !important;
-    right: 102px !important;
-    left: auto !important;
-    bottom: auto !important;
-    transform: none !important;
-    padding: 3px 8px !important;
-    font-size: 0.72rem !important;
-    z-index: 9998 !important;
-  }
-  @media (max-width: 560px) {
-    #cloudBar.has-v99-badge #cloudStatusText { display: none !important; }
+  @media (max-width: 640px) {
+    #cloudBar #cloudStatusText { display: none !important; }
   }
 </style>
 <!-- ===== [모바일 상단여백 + 버튼정리 + 터치듣기 + APK 내장음성 연결 패치] ===== -->
@@ -4868,6 +4863,130 @@
   }
 })();
 </script>
- 
+ <!-- ===== [클라우드 바 버튼 '☰ 메뉴' 탭 내부 이동 & 상단 밀착 고정 패치] ===== -->
+<style id="cloudBarInMenuPatchStyle">
+  html body,
+  html.is-apk-app body,
+  html.is-studio-apk body {
+    padding-top: 0px !important;
+    margin-top: 0px !important;
+  }
+  #btnRestoreCloudBar,
+  #btnRestoreCloudBar.show {
+    display: none !important;
+  }
+</style>
+<script id="cloudBarInMenuPatchScript">
+(function() {
+  var CBAR_STATE_KEY = 'magyo_cloudbar_collapsed_v1';
+
+  function isBarCollapsed() {
+    var bar = document.getElementById('cloudBar');
+    return bar ? bar.classList.contains('collapsed') : false;
+  }
+
+  function getStudioWin() {
+    var ifr = document.getElementById('studioFrame');
+    return (ifr && ifr.contentWindow) ? ifr.contentWindow : null;
+  }
+
+  function syncMenuCloudButtons() {
+    var sw = getStudioWin();
+    if (!sw || !sw.document) return;
+    var doc = sw.document;
+    var collapsed = isBarCollapsed();
+
+    var mobBtn = doc.getElementById('btnMenuCloudBarToggle');
+    if (mobBtn) {
+      mobBtn.innerHTML = collapsed ? '☁️ 클라우드 바 열기' : '☁️ 클라우드 바 숨기기';
+    }
+    var pcBtn = doc.getElementById('btnPcCloudBarToggle');
+    if (pcBtn) {
+      pcBtn.innerHTML = collapsed ? '☁️ 클라우드 바 열기' : '☁️ 클라우드 바 접기';
+      pcBtn.classList.toggle('v88-is-toggled', !collapsed);
+    }
+  }
+
+  // 기존 toggleCloudBar 교체 (접힘 상태 기억 + 플로팅 가림 버튼 차단 + 메뉴 문구 동기화)
+  window.toggleCloudBar = function(hide) {
+    var bar = document.getElementById('cloudBar');
+    if (!bar) return;
+    var nextHide = (typeof hide === 'boolean') ? hide : !bar.classList.contains('collapsed');
+    bar.classList.toggle('collapsed', nextHide);
+    var restoreBtn = document.getElementById('btnRestoreCloudBar');
+    if (restoreBtn) restoreBtn.classList.remove('show');
+    try { localStorage.setItem(CBAR_STATE_KEY, nextHide ? '1' : '0'); } catch (e) {}
+    syncMenuCloudButtons();
+  };
+
+  try {
+    if (localStorage.getItem(CBAR_STATE_KEY) === '1') {
+      var initBar = document.getElementById('cloudBar');
+      if (initBar) initBar.classList.add('collapsed');
+    }
+  } catch (e) {}
+
+  // 스튜디오 프레임 내부 [☰ 메뉴] 맨 첫 줄 및 PC 상단 바에 버튼 삽입
+  function mountCloudBtnIntoMenu() {
+    if (document.body && document.body.style.paddingTop) {
+      document.body.style.removeProperty('padding-top');
+    }
+    var sw = getStudioWin();
+    if (!sw || !sw.document || !sw.document.body) return;
+    var doc = sw.document;
+
+    var menuRow = doc.querySelector('header > .btn-row') || doc.querySelector('header .btn-row');
+    if (menuRow) {
+      var mobBtn = doc.getElementById('btnMenuCloudBarToggle');
+      if (!mobBtn) {
+        mobBtn = doc.createElement('button');
+        mobBtn.type = 'button';
+        mobBtn.id = 'btnMenuCloudBarToggle';
+        mobBtn.className = 'btn btn-primary';
+        mobBtn.style.cssText = 'flex: 1 1 100% !important; font-weight: 800 !important;';
+        mobBtn.onclick = function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          window.toggleCloudBar();
+          var hdr = doc.querySelector('header');
+          var mToggle = doc.getElementById('btnMobMenuToggle');
+          if (hdr && hdr.classList.contains('mob-menu-open') && mToggle) {
+            mToggle.click();
+          }
+        };
+      }
+      if (menuRow.firstElementChild !== mobBtn) {
+        menuRow.insertBefore(mobBtn, menuRow.firstElementChild);
+      }
+    }
+
+    var pcSlot = doc.getElementById('v88DirectViewBtns');
+    if (pcSlot && !doc.getElementById('btnPcCloudBarToggle')) {
+      var pcBtn = doc.createElement('button');
+      pcBtn.type = 'button';
+      pcBtn.id = 'btnPcCloudBarToggle';
+      pcBtn.className = 'btn';
+      pcBtn.onclick = function(e) {
+        e.preventDefault();
+        window.toggleCloudBar();
+      };
+      pcSlot.appendChild(pcBtn);
+    }
+
+    syncMenuCloudButtons();
+  }
+
+  var prevReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    if (typeof prevReady === 'function') prevReady.apply(this, arguments);
+    mountCloudBtnIntoMenu();
+    setTimeout(mountCloudBtnIntoMenu, 350);
+  };
+
+  setInterval(mountCloudBtnIntoMenu, 900);
+  setTimeout(mountCloudBtnIntoMenu, 200);
+})();
+</script>
+<!-- ===== [/클라우드 바 버튼 '☰ 메뉴' 탭 내부 이동 패치 끝] ===== -->
 </body>
 </html>
