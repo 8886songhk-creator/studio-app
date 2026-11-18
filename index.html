@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+8<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -4988,18 +4988,304 @@
 })();
 </script>
 <!-- ===== [/클라우드 바 버튼 '☰ 메뉴' 탭 내부 이동 패치 끝] ===== -->
-  <style>
-    /* 1. 바깥 전체 화면 들썩임 원천 차단 */
-    ...
-  </style>
-  <script>
-    ...
-  })();
-  </script>
-  <!-- 👆 여기까지 지우고 새 코드 붙여넣기 -->
-</body>
-</html>
- 
+<style>
+  /* 1. 바깥 전체 화면 들썩임 원천 차단 */
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    overflow: clip;
+    overscroll-behavior: none;
+  }
+
+  /* 2. 하단 [✕] 옆에 생성될 [🔽 접기] 버튼 */
+  .tts-fold-btn {
+    background: #0f172a;
+    color: #38bdf8;
+    border: 1px solid #38bdf8;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .tts-fold-btn:active {
+    background: #1e293b;
+  }
+
+  /* 3. 접어두기 상태 (React 리렌더링에도 풀리지 않도록 data 속성 사용) */
+  [data-tts-folded="1"] {
+    padding: 6px 10px !important;
+    min-height: 0 !important;
+    height: auto !important;
+  }
+  [data-tts-folded="1"] > *:not(.tts-mini-bar) {
+    display: none !important;
+  }
+
+  .tts-mini-bar {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+  [data-tts-folded="1"] > .tts-mini-bar {
+    display: flex !important;
+  }
+
+  .tts-mini-status {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: #e2e8f0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .tts-mini-btn {
+    background: #1e293b;
+    color: #f8fafc;
+    border: 1px solid #38bdf8;
+    border-radius: 6px;
+    padding: 4px 9px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .tts-mini-close {
+    border-color: #475569;
+    color: #94a3b8;
+  }
+</style>
+
+<script>
+(function () {
+  let isTtsMinimized = false;
+  let isSyncing = false;
+
+  // 상단 '펼치기' 등과 혼동하지 않고 하단 음성 패널만 정확히 탐색
+  function findTtsPanel() {
+    const allBtns = Array.from(document.querySelectorAll('button:not(.tts-fold-btn):not(.tts-mini-btn)'));
+
+    let anchor = allBtns.find(b => (b.textContent || '').includes('이어듣기'));
+    if (!anchor) {
+      anchor = allBtns.find(b => {
+        const t = (b.textContent || '').trim();
+        return t.includes('일시정지') || t === '듣기' || t.includes('▶ 듣기');
+      });
+    }
+    if (!anchor) return null;
+
+    let el = anchor.parentElement;
+    while (el && el !== document.body) {
+      const txt = el.textContent || '';
+      // 전체 앱 레이아웃까지 올라가지 않도록 경계 차단
+      if (txt.includes('TXT열기') || txt.includes('형광펜 뷰어') || txt.includes('자동치환')) {
+        break;
+      }
+      const btnCount = el.querySelectorAll('button:not(.tts-fold-btn):not(.tts-mini-btn)').length;
+      if (btnCount >= 5 || (txt.includes('음성') && btnCount >= 3)) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function getPlayBtn(panel) {
+    const btns = Array.from(panel.querySelectorAll('button:not(.tts-fold-btn):not(.tts-mini-btn)'));
+    return btns.find(b => {
+      const t = (b.textContent || '').trim();
+      return !t.includes('이어듣기') && (t.includes('듣기') || t.includes('일시정지') || t.includes('멈춤') || t.includes('재생'));
+    });
+  }
+
+  function getBottomRowAndCloseBtn(panel) {
+    const btns = Array.from(panel.querySelectorAll('button:not(.tts-fold-btn):not(.tts-mini-btn)'));
+    const resumeBtn = btns.find(b => (b.textContent || '').includes('이어듣기'));
+    const bottomRow = resumeBtn ? resumeBtn.parentElement : (btns[btns.length - 1]?.parentElement || null);
+    if (!bottomRow) return { bottomRow: null, closeBtn: null };
+
+    const rowOrigBtns = Array.from(bottomRow.querySelectorAll('button:not(.tts-fold-btn):not(.tts-mini-btn)'));
+    const closeBtn = rowOrigBtns[rowOrigBtns.length - 1] || null; // 줄 맨 끝 아이콘(✕) 버튼
+    return { bottomRow, closeBtn };
+  }
+
+  // 1. scrollIntoView 가로채기: 바깥 화면 고정 + 내부 뷰어만 스크롤
+  const origScrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (arg) {
+    let scroller = this.parentElement;
+    while (scroller && scroller !== document.body && scroller !== document.documentElement) {
+      const style = window.getComputedStyle(scroller);
+      if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && scroller.scrollHeight > scroller.clientHeight) {
+        break;
+      }
+      scroller = scroller.parentElement;
+    }
+
+    if (scroller && scroller !== document.body && scroller !== document.documentElement) {
+      const scrollerRect = scroller.getBoundingClientRect();
+      const itemRect = this.getBoundingClientRect();
+
+      const ttsPanel = findTtsPanel();
+      let coveredBottom = 0;
+      if (ttsPanel && ttsPanel.offsetParent !== null) {
+        const ttsRect = ttsPanel.getBoundingClientRect();
+        if (ttsRect.top < scrollerRect.bottom && ttsRect.bottom > scrollerRect.top) {
+          coveredBottom = Math.max(0, scrollerRect.bottom - ttsRect.top);
+        }
+      }
+
+      const visibleHeight = Math.max(60, scrollerRect.height - coveredBottom);
+      const itemTop = (itemRect.top - scrollerRect.top) + scroller.scrollTop;
+      const targetTop = itemRect.height > visibleHeight - 24
+        ? itemTop - 12
+        : itemTop - (visibleHeight / 2) + (itemRect.height / 2);
+
+      const behavior = (arg && typeof arg === 'object' && arg.behavior) ? arg.behavior : 'smooth';
+      scroller.scrollTo({ top: Math.max(0, targetTop), behavior });
+
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      return;
+    }
+
+    const res = origScrollIntoView.apply(this, arguments);
+    window.scrollTo(0, 0);
+    return res;
+  };
+
+  // 2. [🔽 접기] 버튼 및 1줄 미니 바 생성/동기화
+  function setupTtsFold() {
+    if (isSyncing) return;
+    const panel = findTtsPanel();
+    if (!panel) return;
+
+    isSyncing = true;
+    try {
+      const { bottomRow, closeBtn } = getBottomRowAndCloseBtn(panel);
+
+      // 하단 줄 맨 오른쪽([✕] 옆)에 [🔽 접기] 버튼 추가
+      if (bottomRow && !panel.querySelector('.tts-fold-btn')) {
+        bottomRow.style.flexWrap = 'wrap';
+        const foldBtn = document.createElement('button');
+        foldBtn.type = 'button';
+        foldBtn.className = 'tts-fold-btn';
+        foldBtn.textContent = '🔽 접기';
+        foldBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          isTtsMinimized = true;
+          panel.setAttribute('data-tts-folded', '1');
+          syncMiniBarText(panel);
+        });
+        bottomRow.appendChild(foldBtn);
+      }
+
+      // 기존 [✕] 버튼 클릭 시 접힘 상태 초기화
+      if (closeBtn && !closeBtn.dataset.ttsCloseHooked) {
+        closeBtn.dataset.ttsCloseHooked = '1';
+        closeBtn.addEventListener('click', () => {
+          isTtsMinimized = false;
+          panel.removeAttribute('data-tts-folded');
+        });
+      }
+
+      // 1줄 미니 바 추가
+      let miniBar = panel.querySelector('.tts-mini-bar');
+      if (!miniBar) {
+        miniBar = document.createElement('div');
+        miniBar.className = 'tts-mini-bar';
+        miniBar.innerHTML = `
+          <div class="tts-mini-status">🔊 음성 낭독 중...</div>
+          <button type="button" class="tts-mini-btn tts-mini-toggle">⏸</button>
+          <button type="button" class="tts-mini-btn tts-mini-expand">🔼 열기</button>
+          <button type="button" class="tts-mini-btn tts-mini-close">✕</button>
+        `;
+
+        const expandPanel = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          isTtsMinimized = false;
+          panel.removeAttribute('data-tts-folded');
+        };
+
+        miniBar.querySelector('.tts-mini-status').addEventListener('click', expandPanel);
+        miniBar.querySelector('.tts-mini-expand').addEventListener('click', expandPanel);
+
+        miniBar.querySelector('.tts-mini-toggle').addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const playBtn = getPlayBtn(panel);
+          if (playBtn) playBtn.click();
+          setTimeout(() => syncMiniBarText(panel), 60);
+        });
+
+        miniBar.querySelector('.tts-mini-close').addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          isTtsMinimized = false;
+          panel.removeAttribute('data-tts-folded');
+          const { closeBtn: currentClose } = getBottomRowAndCloseBtn(panel);
+          if (currentClose) currentClose.click();
+        });
+
+        panel.appendChild(miniBar);
+      }
+
+      if (isTtsMinimized) {
+        panel.setAttribute('data-tts-folded', '1');
+      }
+      syncMiniBarText(panel);
+    } finally {
+      isSyncing = false;
+    }
+  }
+
+  function syncMiniBarText(panel) {
+    const statusEl = panel.querySelector('.tts-mini-status');
+    const toggleEl = panel.querySelector('.tts-mini-toggle');
+    if (!statusEl) return;
+
+    const leafLines = Array.from(panel.querySelectorAll('div, p, span')).filter(el => {
+      if (el.closest('.tts-mini-bar') || el.closest('button')) return false;
+      if (el.querySelectorAll('button, div, p').length > 0) return false;
+      return (el.textContent || '').trim().length > 0;
+    });
+
+    const preview = leafLines.map(el => el.textContent.trim()).pop();
+    statusEl.textContent = preview ? `🔊 ${preview}` : '🔊 음성 낭독 중...';
+
+    const playBtn = getPlayBtn(panel);
+    if (toggleEl && playBtn) {
+      const t = (playBtn.textContent || '').trim();
+      toggleEl.textContent = (t.includes('일시정지') || t.includes('멈춤') || t.includes('⏸')) ? '⏸' : '▶';
+    }
+  }
+
+  let rafId = null;
+  const observer = new MutationObserver(() => {
+    if (isSyncing) return;
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(setupTtsFold);
+  });
+
+  function init() {
+    setupTtsFold();
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
+
+  if (document.body) init();
+  else window.addEventListener('DOMContentLoaded', init);
+})();
+</script>
 
 </body>
 </html>
