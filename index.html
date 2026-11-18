@@ -4650,6 +4650,150 @@
 </script>
 <!-- ===== [/구글 드라이브 .txt 자동반영 + 안전한 앱 텍스트 전체삭제(원본보호) 통합 패치 V2 끝] ===== -->
  
+<!-- 구글 드라이브 자동 동기화 브릿지 -->
+<script>
+(function() {
+  var GAS_KEY = 'magyo_gdrive_webapp_url_v1';
+
+  function getGasUrl() {
+    return (localStorage.getItem(GAS_KEY) || '').trim();
+  }
+
+  window.setupGoogleDriveUrl = function() {
+    var cur = getGasUrl();
+    var input = prompt(
+      '구글 앱스 스크립트 [웹 앱 URL]을 붙여넣어 주세요.\n(https://script.google.com/macros/s/.../exec 형식)',
+      cur
+    );
+    if (input === null) return false;
+    var trimmed = input.trim();
+    if (!trimmed) {
+      localStorage.removeItem(GAS_KEY);
+      updateDriveBtnUI();
+      alert('구글 드라이브 연동 주소가 해제되었습니다.');
+      return false;
+    }
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/i.test(trimmed)) {
+      alert('주소 형식이 다릅니다!\n앱스 스크립트 우측 상단 [배포 - 새 배포 - 웹 앱] 완료 후 나오는 /exec 로 끝나는 웹 앱 URL을 넣어주세요.');
+      return false;
+    }
+    localStorage.setItem(GAS_KEY, trimmed);
+    updateDriveBtnUI();
+    alert('구글 드라이브 연결 완료! 이제 [서버 저장]을 누르면 드라이브 원고도 즉시 업데이트됩니다.');
+    return true;
+  };
+
+  function collectStudioTabs() {
+    var ifr = document.getElementById('studioFrame');
+    var w = ifr && ifr.contentWindow;
+    if (!w) return [];
+    try {
+      if (typeof w.__cloudGetWorkspace === 'function') {
+        var ws = w.__cloudGetWorkspace();
+        if (ws && Array.isArray(ws.tabs)) return ws.tabs;
+      }
+      if (typeof w.eval === 'function') {
+        return w.eval('(typeof fileTabs !== "undefined" ? fileTabs.map(function(t){return {id:t.id,name:t.name,text:t.text||"",hadCrlf:t.hadCrlf!==false};}) : [])') || [];
+      }
+    } catch (e) {}
+    return [];
+  }
+
+  async function syncTabsToGoogleDrive(silent) {
+    var gasUrl = getGasUrl();
+    if (!gasUrl) {
+      if (!silent) {
+        var ok = window.setupGoogleDriveUrl();
+        if (!ok) return;
+        gasUrl = getGasUrl();
+      } else {
+        return;
+      }
+    }
+
+    var allTabs = collectStudioTabs();
+    var validTabs = allTabs.filter(function(t) {
+      return t && t.name && String(t.text || '').trim().length > 0;
+    });
+    if (validTabs.length === 0) return;
+
+    var statusEl = document.getElementById('cloudStatusText');
+    if (statusEl) statusEl.textContent = '구글 드라이브 원고 업데이트 중...';
+
+    try {
+      var res = await fetch(gasUrl, {
+        method: 'POST',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'save', tabs: validTabs })
+      });
+      var data = await res.json();
+      if (!data || !data.ok) {
+        throw new Error((data && data.error) ? data.error : '드라이브 응답 오류');
+      }
+      var stamp = data.savedAtKr || new Date().toLocaleString('ko-KR', { hour12: false });
+      if (statusEl) {
+        statusEl.textContent = '서버 + 구글드라이브 저장 완료 (' + data.savedCount + '개 파일 · ' + stamp + ')';
+      }
+      var ifr = document.getElementById('studioFrame');
+      if (!silent && ifr && ifr.contentWindow && typeof ifr.contentWindow.showToast === 'function') {
+        ifr.contentWindow.showToast('📂 구글 드라이브 원고 ' + data.savedCount + '개 파일 업데이트 완료!');
+      }
+    } catch (err) {
+      if (statusEl) statusEl.textContent = '드라이브 저장 오류: ' + err.message;
+      if (!silent) alert('구글 드라이브 저장 실패: ' + err.message);
+    }
+  }
+
+  function updateDriveBtnUI() {
+    var btn = document.getElementById('btnGDriveCfg');
+    if (!btn) return;
+    var hasUrl = Boolean(getGasUrl());
+    btn.textContent = hasUrl ? '📂 드라이브 연결됨' : '📂 드라이브 연결';
+    btn.style.borderColor = hasUrl ? '#22c55e' : '#eab308';
+    btn.style.color = hasUrl ? '#86efac' : '#fde68a';
+  }
+
+  function mountDriveBridge() {
+    var rightBar = document.querySelector('#cloudBar .cbar-right');
+    if (rightBar && !document.getElementById('btnGDriveCfg')) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.id = 'btnGDriveCfg';
+      b.className = 'c-btn';
+      b.title = '구글 드라이브 웹 앱 URL 연결 설정';
+      b.onclick = function() { window.setupGoogleDriveUrl(); };
+      rightBar.insertBefore(b, rightBar.firstChild);
+      updateDriveBtnUI();
+    }
+
+    if (typeof window.saveToCloudFromStudio === 'function' && !window.saveToCloudFromStudio._gdriveHooked) {
+      var origSave = window.saveToCloudFromStudio;
+      var wrapped = async function(silent) {
+        var r = await origSave.apply(this, arguments);
+        await syncTabsToGoogleDrive(silent);
+        return r;
+      };
+      wrapped._gdriveHooked = true;
+      window.saveToCloudFromStudio = wrapped;
+    } else if (!window._gdriveClickBound) {
+      window._gdriveClickBound = true;
+      document.addEventListener('click', function(e) {
+        var btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (btn && (btn.classList.contains('save') || (btn.textContent || '').indexOf('서버 저장') !== -1)) {
+          syncTabsToGoogleDrive(false);
+        }
+      }, true);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mountDriveBridge);
+  } else {
+    mountDriveBridge();
+  }
+})();
+</script>
  
 </body>
 </html>
