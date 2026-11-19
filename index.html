@@ -6226,6 +6226,115 @@
 </script>
 <!-- ===== [/모바일 전용 통합 패치 V12 — 파트 2/2 끝] ===== -->
    
+<!-- ===== [모바일: 듣기 실행 시 상단바 밀림(외부 프레임 스크롤) 원천 고정 패치] ===== -->
+<style id="mobNoPushUpLockStyle">
+  html, body {
+    overflow: hidden !important;
+    overflow: clip !important;
+    overscroll-behavior: none !important;
+  }
+  #appWrap, #frameWrap {
+    overflow: hidden !important;
+    overflow: clip !important;
+  }
+  /* 외부 문서 하단에 숨어 스크롤 여백을 만들던 미사용 모달 배경 숨김 */
+  body > .gdoc-modal-backdrop:not(.open) {
+    display: none !important;
+  }
+</style>
+
+<script id="mobNoPushUpLockScript">
+(function() {
+  if (window.__MOB_NO_PUSH_UP_LOCK_V1) return;
+  window.__MOB_NO_PUSH_UP_LOCK_V1 = true;
+
+  // 1. 최상위 창(클라우드 바 영역) 스크롤 위치 항상 0으로 고정
+  function resetOuterScroll() {
+    if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
+    if (document.documentElement && document.documentElement.scrollTop !== 0) {
+      document.documentElement.scrollTop = 0;
+    }
+    if (document.body && document.body.scrollTop !== 0) {
+      document.body.scrollTop = 0;
+    }
+    var aw = document.getElementById('appWrap');
+    if (aw && aw.scrollTop !== 0) aw.scrollTop = 0;
+  }
+
+  window.addEventListener('scroll', resetOuterScroll, { passive: true, capture: true });
+  document.addEventListener('scroll', resetOuterScroll, { passive: true, capture: true });
+
+  // 2. 내부 뷰어 문단 이동 시 부모 창(상단 바)을 밀어 올리지 않고 본문만 부드럽게 스크롤
+  function patchInnerScrollIntoView(sw) {
+    if (!sw || !sw.document || !sw.Element || sw.__safeScrollPatched) return;
+    sw.__safeScrollPatched = true;
+
+    var origScrollIntoView = sw.Element.prototype.scrollIntoView;
+
+    function getInnerScroller(el, doc) {
+      var cur = el ? el.parentElement : null;
+      while (cur && cur !== doc.body && cur !== doc.documentElement) {
+        var cs = sw.getComputedStyle(cur);
+        if (/(auto|scroll|overlay)/.test(cs.overflowY || '') && cur.scrollHeight > cur.clientHeight + 4) {
+          return cur;
+        }
+        cur = cur.parentElement;
+      }
+      return doc.scrollingElement || doc.documentElement || doc.body;
+    }
+
+    sw.Element.prototype.scrollIntoView = function(arg) {
+      var doc = sw.document;
+      var viewer = doc.getElementById('highlightViewer');
+      if (!viewer || !viewer.contains(this)) {
+        var r = origScrollIntoView.apply(this, arguments);
+        resetOuterScroll();
+        return r;
+      }
+
+      var smooth = (arg && typeof arg === 'object' && arg.behavior === 'smooth');
+      var scroller = getInnerScroller(this, doc);
+      var hdr = doc.querySelector('[data-mob-main-hdr="1"]') || doc.querySelector('header');
+      var hdrBottom = hdr ? Math.max(0, hdr.getBoundingClientRect().bottom) : 0;
+      var eRect = this.getBoundingClientRect();
+
+      if (scroller === doc.body || scroller === doc.documentElement || scroller === doc.scrollingElement) {
+        var visTop = hdrBottom;
+        var visBottom = Math.max(visTop + 80, sw.innerHeight - 52);
+        var targetCenter = (visTop + visBottom) / 2;
+        var curTop = sw.pageYOffset || scroller.scrollTop || 0;
+        var nextTop = Math.max(0, curTop + ((eRect.top + eRect.bottom) / 2 - targetCenter));
+        sw.scrollTo({ top: nextTop, behavior: smooth ? 'smooth' : 'auto' });
+      } else {
+        var sRect = scroller.getBoundingClientRect();
+        var sVisTop = Math.max(sRect.top, hdrBottom);
+        var sVisBottom = Math.min(sRect.bottom, sw.innerHeight - 52);
+        var sCenter = (sVisTop + Math.max(sVisTop + 80, sVisBottom)) / 2;
+        var nextScrollTop = Math.max(0, scroller.scrollTop + ((eRect.top + eRect.bottom) / 2 - sCenter));
+        scroller.scrollTo({ top: nextScrollTop, behavior: smooth ? 'smooth' : 'auto' });
+      }
+
+      resetOuterScroll();
+    };
+  }
+
+  var prevReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    if (typeof prevReady === 'function') prevReady.apply(this, arguments);
+    resetOuterScroll();
+    patchInnerScrollIntoView(sw);
+  };
+
+  setInterval(function() {
+    resetOuterScroll();
+    var ifr = document.getElementById('studioFrame');
+    if (ifr && ifr.contentWindow) patchInnerScrollIntoView(ifr.contentWindow);
+  }, 500);
+
+  resetOuterScroll();
+})();
+</script>
+<!-- ===== [/모바일: 듣기 실행 시 상단바 밀림 원천 고정 패치 끝] ===== -->
 
   </body>
 </html>
