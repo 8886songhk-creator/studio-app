@@ -4989,7 +4989,8 @@
 </script>
 <!-- ===== [/클라우드 바 버튼 '☰ 메뉴' 탭 내부 이동 패치 끝] ===== -->
 
- <!-- ===== [모바일 전용 패치 V11 — 파트 1/2: 상단바·메뉴 4줄 압축 · 불필요 창 제거 · 뷰어바 완전 고정] ===== -->
+
+<!-- ===== [모바일 전용 패치 V11 — 파트 1/2: 상단바·메뉴 4줄 칼정렬 · 불필요 창 제거 · 뷰어바 완전 고정] ===== -->
 <style id="mobMasterPatchV11Style">
   /* 모바일 모드 시 최상단 클라우드 바의 '🔍 검색' 버튼 및 검색 패널 완전 제거 */
   html.is-mob-ui-v11 #cloudBar .v98-search-fab,
@@ -5106,7 +5107,7 @@
       'html.is-mob-ui-v11 [data-mob-listen-btn="1"].is-tts-on {',
       '  background: #0d9488 !important; border-color: #2dd4bf !important; color: #fff !important;',
       '}',
-      /* ☰ 메뉴 내부 4줄 초슬림 그리드 압축 */
+      /* ☰ 메뉴 내부 딱 4줄 칼정렬 그리드 (3칸 + 3칸 + 4칸×2줄) */
       'html.is-mob-ui-v11 #mobMenuRow1Grid, html.is-mob-ui-v11 #mobMenuRow2Grid {',
       '  display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important;',
       '  gap: 5px !important; width: 100% !important; flex: 1 1 100% !important; margin: 2px 0 !important;',
@@ -5115,17 +5116,25 @@
       '  display: grid !important; grid-template-columns: repeat(4, minmax(0, 1fr)) !important;',
       '  gap: 5px !important; width: 100% !important; flex: 1 1 100% !important; margin: 2px 0 !important;',
       '}',
-      'html.is-mob-ui-v11 #mobMenuRow1Grid > *, html.is-mob-ui-v11 #mobMenuRow2Grid > *, html.is-mob-ui-v11 #mobMenuSubGrid > * {',
-      '  width: 100% !important; min-width: 0 !important; height: 31px !important; margin: 0 !important;',
-      '  padding: 0 4px !important; border-radius: 7px !important; font-size: 0.72rem !important; font-weight: 700 !important;',
+      'html.is-mob-ui-v11 #mobMenuRow1Grid > *, html.is-mob-ui-v11 #mobMenuRow2Grid > * {',
+      '  width: 100% !important; min-width: 0 !important; height: 33px !important; min-height: 0 !important; margin: 0 !important;',
+      '  padding: 0 4px !important; border-radius: 7px !important; font-size: 0.76rem !important; font-weight: 800 !important;',
       '  display: inline-flex !important; align-items: center !important; justify-content: center !important;',
-      '  white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;',
+      '  white-space: nowrap !important; overflow: hidden !important; box-sizing: border-box !important;',
       '}',
-      /* 파일 input 손상 없이 긴 버튼 이름만 모바일에서 축약 */
-      'html.is-mob-ui-v11 [data-mob-short] { font-size: 0 !important; }',
-      'html.is-mob-ui-v11 [data-mob-short] > *:not(input) { display: none !important; }',
-      'html.is-mob-ui-v11 [data-mob-short]::after {',
-      '  content: attr(data-mob-short); font-size: 0.71rem !important; font-weight: 700 !important; line-height: 1.1 !important;',
+      'html.is-mob-ui-v11 #mobMenuSubGrid > * {',
+      '  width: 100% !important; min-width: 0 !important; height: 32px !important; min-height: 0 !important; margin: 0 !important;',
+      '  padding: 0 2px !important; border-radius: 7px !important; font-size: 0.71rem !important; font-weight: 800 !important;',
+      '  letter-spacing: -0.03em !important; display: inline-flex !important; align-items: center !important;',
+      '  justify-content: center !important; white-space: nowrap !important; overflow: hidden !important; box-sizing: border-box !important;',
+      '}',
+      /* 원본 긴 글씨는 모바일에서 완전히 숨기고 짧은 요약 라벨만 단독 표시 (PC 전환 시 자동 복구) */
+      'html:not(.is-mob-ui-v11) .mob-clean-lbl { display: none !important; }',
+      'html.is-mob-ui-v11 .mob-orig-lbl { display: none !important; }',
+      'html.is-mob-ui-v11 .mob-clean-lbl {',
+      '  display: inline-block !important; font-size: 0.71rem !important; font-weight: 800 !important;',
+      '  letter-spacing: -0.03em !important; line-height: 1.1 !important; white-space: nowrap !important;',
+      '  overflow: hidden !important; text-overflow: ellipsis !important; max-width: 100% !important;',
       '}',
       'html.is-mob-ui-v11 body.paper-theme .mob-ep-live-wrap { background: #fffdf8 !important; border-color: #bfb69e !important; }',
       'html.is-mob-ui-v11 body.paper-theme .mob-ep-live-txt { color: #0f766e !important; }'
@@ -5133,8 +5142,37 @@
     (doc.head || doc.documentElement).appendChild(st);
   }
 
+  function getOrigButtonText(el) {
+    if (!el) return '';
+    var origSpan = el.querySelector(':scope > .mob-orig-lbl');
+    return ((origSpan ? origSpan.textContent : el.textContent) || '').replace(/\s+/g, '');
+  }
+
+  // 내부 input(파일 열기 등)을 절대 건드리지 않고 긴 버튼 텍스트만 깔끔하게 교체
+  function applyShortButtonLabel(el, shortTxt) {
+    if (!el || !shortTxt) return;
+    el.removeAttribute('data-mob-short');
+    var cleanSpan = el.querySelector(':scope > .mob-clean-lbl');
+    if (cleanSpan) {
+      if (cleanSpan.textContent !== shortTxt) cleanSpan.textContent = shortTxt;
+      return;
+    }
+    var doc = el.ownerDocument;
+    var origWrap = doc.createElement('span');
+    origWrap.className = 'mob-orig-lbl';
+    Array.prototype.slice.call(el.childNodes).forEach(function(n) {
+      if (n.nodeType === 1 && (n.tagName === 'INPUT' || n.tagName === 'SELECT')) return;
+      origWrap.appendChild(n);
+    });
+    cleanSpan = doc.createElement('span');
+    cleanSpan.className = 'mob-clean-lbl';
+    cleanSpan.textContent = shortTxt;
+    el.appendChild(origWrap);
+    el.appendChild(cleanSpan);
+  }
+
   function shortenMenuLabel(el) {
-    var t = (el.textContent || '').replace(/\s+/g, '');
+    var t = getOrigButtonText(el);
     var shortTxt = '';
     if (/PC스튜디오로전환|PC모드/.test(t)) shortTxt = '💻 PC전환';
     else if (/기획서/.test(t)) shortTxt = '🔄 기획서';
@@ -5144,7 +5182,8 @@
     else if (/대사붙음|통합정리/.test(t)) shortTxt = '🧹 대사정리';
     else if (/전체복사/.test(t)) shortTxt = '📋 전체복사';
     else if (/다른이름저장/.test(t)) shortTxt = '📄 다른저장';
-    if (shortTxt) el.setAttribute('data-mob-short', shortTxt);
+    else if (t.length > 6) shortTxt = t.slice(0, 5);
+    if (shortTxt) applyShortButtonLabel(el, shortTxt);
   }
 
   NS.updateLiveEpBadge = function(sw) {
@@ -5223,7 +5262,7 @@
     var mainHdr = doc.querySelector('body > header') || doc.querySelector('header');
     if (mainHdr) mainHdr.setAttribute('data-mob-main-hdr', '1');
 
-    // 1) 2차 레이더 바 + 뷰어 본문 검색창 + 잘못 노출된 PC용 큰 뷰어 메뉴판 완전 숨김
+    // 1) 2차 레이더 바 + 뷰어 본문 검색창 완전 숨김
     var radar = doc.getElementById('v92RadarBriefingBar');
     if (radar) { radar.setAttribute('data-mob-hidden-el', '1'); radar.style.setProperty('display', 'none', 'important'); }
 
@@ -5241,11 +5280,10 @@
       }
     });
 
-    // 2) PC용 뷰어 제어판(이전화·좌측창 접기·도서폭·범례표시)과 진짜 모바일 뷰어 바(11930.jpg) 정확히 구분
+    // 2) PC용 뷰어 제어판 숨김 & 진짜 모바일 뷰어 바 식별
     var realMobVBar = doc.querySelector('[data-mob-fixed-vbar="1"]');
     doc.querySelectorAll('button').forEach(function(b) {
-      var bt = (b.textContent || '').trim();
-      if (bt === '가-') {
+      if ((b.textContent || '').trim() === '가-') {
         var p = b.parentElement;
         while (p && p.parentElement && p !== mainHdr && p.id !== 'tabHighlight' && !p.querySelector('#highlightViewer')) {
           if (p.querySelector('select')) break;
@@ -5263,7 +5301,7 @@
       }
     });
 
-    // 3) 상단 [현재 탭 | 취소 | ☰ 메뉴] 1줄 정렬 + PC모드 버튼 강제 제거 + 메뉴 4줄 슬림화
+    // 3) 상단 [현재 탭 | 취소 | ☰ 메뉴] 1줄 정렬 + ☰ 메뉴 딱 4줄 칼정렬
     var mToggle = doc.getElementById('btnMobMenuToggle') || doc.querySelector('[data-mob-menubtn="1"]');
     if (!mToggle && mainHdr) {
       mainHdr.querySelectorAll('button').forEach(function(b) {
@@ -5286,7 +5324,7 @@
       var undoBtn = null;
       Array.prototype.slice.call(row1Top.children).forEach(function(ch, idx) {
         if (ch === mToggle) return;
-        var ct = (ch.textContent || '').replace(/\s+/g, '');
+        var ct = getOrigButtonText(ch);
         if (/PC모드/i.test(ct)) {
           ch.setAttribute('data-mob-hidden-el', '1');
           ch.style.setProperty('display', 'none', 'important');
@@ -5297,7 +5335,7 @@
           ch.setAttribute('data-mob-tabsel', '1');
         }
       });
-      row1Top.querySelectorAll('button, a').forEach(function( innerBtn ) {
+      row1Top.querySelectorAll('button, a').forEach(function(innerBtn) {
         if (/PC\s*모드/i.test(innerBtn.textContent || '')) {
           innerBtn.setAttribute('data-mob-hidden-el', '1');
           innerBtn.style.setProperty('display', 'none', 'important');
@@ -5318,7 +5356,7 @@
           r1Grid.id = 'mobMenuRow1Grid';
           r1Grid.addEventListener('click', function(e) {
             var b = e.target && e.target.closest ? e.target.closest('button, label') : null;
-            if (b && /자동\s*치환|간격\s*정리/.test(b.textContent || '')) {
+            if (b && /자동치환|간격정리/.test(getOrigButtonText(b))) {
               setTimeout(function() { NS.closeMobileMenu(doc); }, 60);
             }
           });
@@ -5326,14 +5364,17 @@
             if (e.target && e.target.type === 'file') setTimeout(function() { NS.closeMobileMenu(doc); }, 200);
           });
         }
-        Array.prototype.slice.call(row2Orig.children).forEach(function(it) {
-          if (it !== mToggle && it !== realMobVBar) r1Grid.appendChild(it);
-        });
 
         var r2Grid = doc.getElementById('mobMenuRow2Grid');
         if (!r2Grid) {
           r2Grid = doc.createElement('div');
           r2Grid.id = 'mobMenuRow2Grid';
+        }
+
+        var subGrid = doc.getElementById('mobMenuSubGrid');
+        if (!subGrid) {
+          subGrid = doc.createElement('div');
+          subGrid.id = 'mobMenuSubGrid';
         }
 
         var ttsOptBtn = doc.getElementById('mobCompactTtsCfgBtn');
@@ -5365,39 +5406,70 @@
         var cbar = origById.call(document, 'cloudBar');
         cloudOptBtn.textContent = (cbar && cbar.classList.contains('collapsed')) ? '☁️ 바열기' : '☁️ 클라우드';
 
-        var subGrid = doc.getElementById('mobMenuSubGrid');
-        if (!subGrid) {
-          subGrid = doc.createElement('div');
-          subGrid.id = 'mobMenuSubGrid';
-        }
-
+        // row2Orig와 menuDrawer의 모든 버튼을 스캔하여 각 줄(1줄 3칸 / 2줄 3칸 / 3~4줄 4칸×2)에 정확히 배정
         var saveBtn = null;
-        Array.prototype.slice.call(menuDrawer.children).forEach(function(mEl) {
-          if (mEl === r1Grid || mEl === r2Grid || mEl === subGrid || mEl.id === 'btnMenuCloudBarToggle') return;
-          if (mEl.hasAttribute('data-mob-hidden-el')) return;
-          var cleanT = (mEl.textContent || '').replace(/\s+/g, '');
+        var pool = []
+          .concat(Array.prototype.slice.call(row2Orig.children))
+          .concat(Array.prototype.slice.call(menuDrawer.children))
+          .concat(Array.prototype.slice.call(r1Grid.children));
+
+        pool.forEach(function(el) {
+          if (!el || el === mToggle || el === realMobVBar || el === r1Grid || el === r2Grid || el === subGrid) return;
+          if (el === ttsOptBtn || el === cloudOptBtn || el.id === 'btnMenuCloudBarToggle' || el.id === 'btnInnerClearAllText') return;
+
+          var cleanT = getOrigButtonText(el);
+          if (!cleanT) return;
+
+          // 2번째 줄 1번 칸으로 보낼 [💾 저장] 분리
           if (/^(?:💾)?저장$/.test(cleanT)) {
-            saveBtn = mEl;
-          } else if (/^(?:📂)?(?:텍스트열기|TXT열기|파일열기)$|일괄자동치환|^자동치환$|^간격정리$|실행취소/.test(cleanT)) {
-            mEl.setAttribute('data-mob-hidden-el', '1');
-            mEl.style.setProperty('display', 'none', 'important');
-          } else {
-            shortenMenuLabel(mEl);
-            subGrid.appendChild(mEl);
+            if (!saveBtn) saveBtn = el;
+            else { el.setAttribute('data-mob-hidden-el', '1'); el.style.setProperty('display', 'none', 'important'); }
+            return;
           }
+
+          // 1번째 줄 3칸 ([📂 TXT열기] [⚡ 자동치환] [🧹 간격정리])
+          if (/TXT열기/.test(cleanT) && !/다중TXT/.test(cleanT)) {
+            if (el.parentElement !== r1Grid) r1Grid.appendChild(el);
+            return;
+          }
+          if (/^(?:⚡)?자동치환$/.test(cleanT)) {
+            if (el.parentElement !== r1Grid) r1Grid.appendChild(el);
+            return;
+          }
+          if (/^(?:🧹)?간격정리$/.test(cleanT)) {
+            if (el.parentElement !== r1Grid) r1Grid.appendChild(el);
+            return;
+          }
+
+          // 모바일에 불필요한 중복/데스크톱 전용(좌측창 접기 등) 숨김 -> 하단 정확히 8개(4×2줄) 유지
+          if (/좌측창|텍스트열기|파일열기|일괄자동치환|실행취소|클라우드바/.test(cleanT)) {
+            el.setAttribute('data-mob-hidden-el', '1');
+            el.style.setProperty('display', 'none', 'important');
+            return;
+          }
+
+          // 나머지 8개 도구 버튼 요약 후 4열 그리드(3~4번째 줄) 배치
+          shortenMenuLabel(el);
+          if (el.parentElement !== subGrid) subGrid.appendChild(el);
         });
 
-        if (saveBtn && saveBtn.parentElement !== r2Grid) r2Grid.insertBefore(saveBtn, r2Grid.firstChild);
+        // 2번째 줄 정확히 3칸 고정: [💾 저장] | [🎧 듣기설정] | [☁️ 클라우드]
+        if (saveBtn) {
+          saveBtn.style.removeProperty('display');
+          if (saveBtn.parentElement !== r2Grid || r2Grid.firstElementChild !== saveBtn) {
+            r2Grid.insertBefore(saveBtn, r2Grid.firstChild);
+          }
+        }
         if (ttsOptBtn.parentElement !== r2Grid) r2Grid.appendChild(ttsOptBtn);
         if (cloudOptBtn.parentElement !== r2Grid) r2Grid.appendChild(cloudOptBtn);
 
-        menuDrawer.appendChild(r1Grid);
-        menuDrawer.appendChild(r2Grid);
-        menuDrawer.appendChild(subGrid);
+        if (r1Grid.parentElement !== menuDrawer) menuDrawer.appendChild(r1Grid);
+        if (r2Grid.parentElement !== menuDrawer) menuDrawer.appendChild(r2Grid);
+        if (subGrid.parentElement !== menuDrawer) menuDrawer.appendChild(subGrid);
       }
     }
 
-    // 4) 진짜 모바일 뷰어 바를 [현재 탭 | 취소 | ☰ 메뉴] 바로 아래에 고정 장착
+    // 4) 진짜 모바일 뷰어 바를 [현재 탭 | 취소 | ☰ 메뉴] 바로 아래에 완전 고정
     if (realMobVBar && mainHdr) {
       var epSel = realMobVBar.querySelector('select');
       if (epSel && !epSel.parentElement.classList.contains('mob-ep-live-wrap')) {
@@ -5430,7 +5502,6 @@
       realMobVBar.classList.toggle('is-hl-on', !hlTab || hlTab.classList.contains('active'));
     }
 
-    // 고정 헤더 높이만큼 본문 상단 여백 자동 확보 (스크롤 시 고정바 겹침 방지)
     if (mainHdr && !mainHdr.classList.contains('mob-menu-open')) {
       var hh = mainHdr.offsetHeight;
       if (hh > 24) doc.body.style.setProperty('padding-top', (hh + 6) + 'px', 'important');
@@ -5466,525 +5537,6 @@
 })();
 </script>
 <!-- ===== [/모바일 전용 패치 V11 — 파트 1/2 끝] ===== -->
-<!-- ===== [모바일 전용 패치 V11 — 파트 2/2: 즉시 듣기 · 전용 설정창 분리 · 알림창 회차표시 · 다음권 자동재생] ===== -->
-<script id="mobMasterPatchV11Part2">
-(function() {
-  if (window.__MOB_V11_PART2) return;
-  window.__MOB_V11_PART2 = true;
-
-  var NS = window.__MOB_V11 = window.__MOB_V11 || {};
-  var savedBaseTitle = document.title || 'Studio Cloud';
-  var currentEpMeta = { full: '', epPart: '', subPart: '', bookPart: '' };
-  var manualStopTs = 0;
-  var advancingLockUntil = 0;
-  var wasPlayingMap = new WeakMap();
-  var lastLineMap = {};
-
-  // 문장·줄 번호를 제거하고 '회차 + 소제목'만 깔끔하게 추출
-  function parseEpAndSubtitle(rawEpTitle, rawTabName) {
-    var cleanBook = String(rawTabName || '').replace(/\.(txt|md)$/i, '').trim() || '오디오북';
-    var cleanEp = String(rawEpTitle || '')
-      .replace(/^(?:📱\s*내장\s*음성\s*·\s*|🟢\s*화면꺼짐[^·]*·\s*|🎧\s*)/, '')
-      .replace(/^[📌📖🔖#*\-\s]+/, '')
-      .replace(/\s*·\s*\d+\s*(?:줄|번째\s*문장|문장).*$/, '')
-      .replace(/\s*\(\s*(?:문장\s*)?\d+\s*\/\s*\d+.*\)\s*$/, '')
-      .replace(/\s*\(\d+%\)\s*$/, '')
-      .trim();
-
-    if (!cleanEp || cleanEp === '원고' || cleanEp === '원고 낭독') {
-      return { full: cleanBook, epPart: cleanBook, subPart: '', bookPart: cleanBook };
-    }
-
-    var m = cleanEp.match(/^((?:제\s*)?\d+\s*(?:화|편|장|권)|프롤로그|에필로그|외전[^\s.:：\-—·]*)\s*(?:[.:：\-—·]+\s*|\s+)?(.*)$/);
-    if (m) {
-      var epRaw = m[1].replace(/\s+/g, '');
-      if (/^\d+(?:화|편|장)$/.test(epRaw)) epRaw = '제' + epRaw;
-      var sub = (m[2] || '').trim();
-      var full = sub ? (epRaw + '. ' + sub) : epRaw;
-      return { full: full, epPart: epRaw, subPart: sub, bookPart: cleanBook };
-    }
-    return { full: cleanEp, epPart: cleanEp.slice(0, 10), subPart: '', bookPart: cleanBook };
-  }
-
-  // MediaMetadata 생성자 가드 (문장 번호 유입 원천 차단)
-  function installMediaMetaGuard(w) {
-    if (!w || typeof w.MediaMetadata !== 'function' || w.__mobV11MetaGuard) return;
-    w.__mobV11MetaGuard = true;
-    var OrigMM = w.MediaMetadata;
-    w.__OrigMediaMetadata = OrigMM;
-    w.MediaMetadata = function(init) {
-      var src = init || {};
-      var info = currentEpMeta.full
-        ? currentEpMeta
-        : parseEpAndSubtitle(src.title || '', src.artist || '');
-      return new OrigMM({
-        title: info.full || src.title || '오디오북',
-        artist: info.bookPart || '',
-        album: '',
-        artwork: src.artwork || []
-      });
-    };
-    w.MediaMetadata.prototype = OrigMM.prototype;
-  }
-  installMediaMetaGuard(window);
-
-  // 휴대폰 알림창(MediaSession) 및 상태줄에 회차·소제목 반영
-  function pushCleanNotification(sw, epTitle, tabName) {
-    var info = parseEpAndSubtitle(epTitle, tabName);
-    currentEpMeta = info;
-
-    [window, sw].forEach(function(w) {
-      if (!w || !w.navigator || !('mediaSession' in w.navigator)) return;
-      try {
-        var Ctor = w.__OrigMediaMetadata || w.MediaMetadata;
-        if (typeof Ctor === 'function') {
-          var cur = w.navigator.mediaSession.metadata;
-          if (!cur || cur.title !== info.full || cur.artist !== info.bookPart || cur.album !== '') {
-            w.navigator.mediaSession.metadata = new Ctor({
-              title: info.full,
-              artist: info.bookPart,
-              album: ''
-            });
-          }
-        }
-        w.navigator.mediaSession.playbackState = 'playing';
-      } catch (e) {}
-    });
-
-    if (info.full) {
-      document.title = info.full;
-      if (sw && sw.document) sw.document.title = info.full;
-    }
-
-    if (window.AndroidTTS && info.full) {
-      ['setNotificationTitle', 'setTitle', 'setEpisodeTitle', 'setChapterTitle', 'updateNotificationTitle'].forEach(function(fn) {
-        try {
-          if (typeof window.AndroidTTS[fn] === 'function') window.AndroidTTS[fn](info.full);
-        } catch (e) {}
-      });
-    }
-
-    if (sw && sw.document) {
-      var epEl = sw.document.getElementById('v93StatusEp');
-      if (epEl) {
-        var want = '🎧 ' + info.full;
-        if (epEl.textContent !== want) epEl.textContent = want;
-      }
-    }
-  }
-
-  // 전용 듣기 설정 모달 스타일 & 다음 권 전환 브릿지 주입
-  function ensurePart2StyleAndBridge(sw) {
-    var doc = sw.document;
-    if (!doc.getElementById('mobV11Part2Style')) {
-      var st = doc.createElement('style');
-      st.id = 'mobV11Part2Style';
-      st.textContent = [
-        'html.is-mob-ui-v11 body > #v93TtsPlayerDock { display: none !important; }',
-        'html.is-mob-ui-v11 #mobTtsOptionModalBackdrop {',
-        '  display: none !important; position: fixed !important; inset: 0 !important; z-index: 99950 !important;',
-        '  background: rgba(2, 6, 23, 0.8) !important; backdrop-filter: blur(4px) !important;',
-        '  align-items: center !important; justify-content: center !important; padding: 14px !important;',
-        '}',
-        'html.is-mob-ui-v11 #mobTtsOptionModalBackdrop.open { display: flex !important; }',
-        'html.is-mob-ui-v11 .mob-tts-modal-card {',
-        '  width: 100% !important; max-width: 430px !important; max-height: 86vh !important; overflow-y: auto !important;',
-        '  background: #0f172a !important; border: 1px solid #38bdf8 !important; border-radius: 15px !important;',
-        '  padding: 13px !important; box-shadow: 0 20px 50px rgba(0,0,0,0.75) !important; color: #f1f5f9 !important;',
-        '}',
-        'html.is-mob-ui-v11 .mob-tts-modal-hdr {',
-        '  display: flex !important; align-items: center !important; justify-content: space-between !important;',
-        '  padding-bottom: 9px !important; margin-bottom: 9px !important; border-bottom: 1px solid #1e293b !important;',
-        '  font-size: 0.9rem !important; font-weight: 800 !important; color: #e0f2fe !important;',
-        '}',
-        'html.is-mob-ui-v11 #mobTtsOptionModalBody #v93TtsPlayerDock {',
-        '  display: flex !important; flex-direction: column !important; position: static !important;',
-        '  inset: auto !important; transform: none !important; width: 100% !important; max-width: none !important;',
-        '  margin: 0 !important; box-shadow: none !important; z-index: 1 !important;',
-        '}',
-        'html.is-mob-ui-v11 #mobTtsOptionModalBody [data-mob-hide-dock-ctrl="1"] { display: none !important; }',
-        'html.is-mob-ui-v11 .mob-tts-speed-presets {',
-        '  display: grid !important; grid-template-columns: repeat(6, 1fr) !important; gap: 5px !important;',
-        '  margin-top: 10px !important; padding-top: 10px !important; border-top: 1px dashed #334155 !important;',
-        '}',
-        'html.is-mob-ui-v11 .mob-tts-spd-btn {',
-        '  background: #1e293b !important; color: #e2e8f0 !important; border: 1px solid #334155 !important;',
-        '  border-radius: 7px !important; padding: 6px 0 !important; font-size: 0.75rem !important;',
-        '  font-weight: 800 !important; cursor: pointer !important; text-align: center !important;',
-        '}',
-        'html.is-mob-ui-v11 .mob-tts-spd-btn:active { background: #0284c7 !important; color: #fff !important; }'
-      ].join('\n');
-      (doc.head || doc.documentElement).appendChild(st);
-    }
-
-    if (!sw.__mobV11LexReady) {
-      var sc = doc.createElement('script');
-      sc.id = 'mobV11LexBridge';
-      sc.textContent = [
-        '(function(){',
-        '  window.__mobV11LexReady = true;',
-        '  window.__mobV11AdvanceNextTab = function() {',
-        '    if (typeof fileTabs === "undefined" || !Array.isArray(fileTabs) || fileTabs.length <= 1) return null;',
-        '    var curIdx = typeof activeTabIdx === "number" ? activeTabIdx : 0;',
-        '    var curTab = fileTabs[curIdx];',
-        '    var isValid = function(t) {',
-        '      return Boolean(t && !t._driveUnlinked && String(t.text || "").trim().length > 0 && !/^원고없음(?:\\.(?:txt|md))?$/i.test(String(t.name || "").trim()));',
-        '    };',
-        '    var targetIdx = -1;',
-        '    if (curTab && curTab.name) {',
-        '      var vm = String(curTab.name).match(/(\\d+)\\s*권/);',
-        '      if (vm) {',
-        '        var nextVol = (parseInt(vm[1], 10) + 1) + "권";',
-        '        for (var i = 0; i < fileTabs.length; i++) {',
-        '          if (i !== curIdx && isValid(fileTabs[i]) && String(fileTabs[i].name || "").indexOf(nextVol) !== -1) {',
-        '            targetIdx = i; break;',
-        '          }',
-        '        }',
-        '      }',
-        '    }',
-        '    if (targetIdx === -1) {',
-        '      for (var j = curIdx + 1; j < fileTabs.length; j++) {',
-        '        if (isValid(fileTabs[j])) { targetIdx = j; break; }',
-        '      }',
-        '    }',
-        '    if (targetIdx === -1) return null;',
-        '    activeTabIdx = targetIdx;',
-        '    if (typeof activeEditingLineIdx !== "undefined") activeEditingLineIdx = null;',
-        '    var nextTab = fileTabs[targetIdx];',
-        '    var mTa = document.getElementById("masterText");',
-        '    if (mTa && nextTab) mTa.value = nextTab.text;',
-        '    if (nextTab && (!nextTab.episodes || !nextTab.episodes.length || nextTab._needsAnalyze)) {',
-        '      if (typeof analyzeSingleTabOnly === "function") analyzeSingleTabOnly(nextTab, false);',
-        '      else if (typeof analyzeAllTabs === "function") analyzeAllTabs(false);',
-        '    }',
-        '    var vSel = document.querySelector("[data-mob-fixed-vbar=\\"1\\"] select");',
-        '    if (vSel && vSel.options && vSel.options.length > 0 && vSel.selectedIndex !== 0) {',
-        '      vSel.selectedIndex = 0;',
-        '      try { vSel.dispatchEvent(new Event("change", { bubbles: true })); } catch (e) {}',
-        '    }',
-        '    if (typeof renderFileTabBar === "function") renderFileTabBar();',
-        '    if (typeof refreshActiveTabViews === "function") refreshActiveTabViews(false);',
-        '    try { window.scrollTo(0, 0); } catch (e) {}',
-        '    return { idx: targetIdx, name: nextTab.name };',
-        '  };',
-        '})();'
-      ].join('\n');
-      doc.body.appendChild(sc);
-    }
-  }
-
-  function isTtsPlayingNow(sw) {
-    if (!sw || !sw.document) return false;
-    if (window.AndroidTTS && sw.__nTts) {
-      return Boolean(sw.__nTts.playing && !sw.__nTts.paused);
-    }
-    var mb = sw.document.getElementById('v93BtnPlayMain');
-    if (mb) {
-      return mb.classList.contains('is-playing') || /일시정지|멈춤|⏸/.test(mb.textContent || '');
-    }
-    return false;
-  }
-
-  function syncTopListenBtnUI(sw) {
-    if (!sw || !sw.document) return;
-    var btn = sw.document.querySelector('[data-mob-listen-btn="1"]');
-    if (!btn) return;
-    var on = isTtsPlayingNow(sw);
-    btn.classList.toggle('is-tts-on', on);
-    btn.textContent = on ? '⏸ 멈춤' : '🎧 듣기';
-  }
-
-  function resolveCurrentNotification(sw) {
-    if (!sw || !sw.document) return;
-    var tab = (typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
-    var tabName = tab ? tab.name : '';
-
-    if (window.AndroidTTS && sw.__nTts && sw.__nTts.items && sw.__nTts.items[sw.__nTts.cur]) {
-      var it = sw.__nTts.items[sw.__nTts.cur];
-      lastLineMap[tabName] = it.lineIdx;
-      pushCleanNotification(sw, it.epTitle, tabName);
-      return;
-    }
-
-    var activeRow = sw.document.querySelector('#highlightViewer .v93-tts-row-active[data-line]');
-    if (activeRow && tab && Array.isArray(tab.episodes)) {
-      var lIdx = parseInt(activeRow.getAttribute('data-line'), 10);
-      if (!isNaN(lIdx)) {
-        lastLineMap[tabName] = lIdx;
-        for (var i = 0; i < tab.episodes.length; i++) {
-          var ep = tab.episodes[i];
-          if (lIdx >= ep.startLine && lIdx < ep.startLine + ep.lines.length) {
-            pushCleanNotification(sw, ep.title, tabName);
-            return;
-          }
-        }
-      }
-    }
-
-    try {
-      var bms = JSON.parse(localStorage.getItem('magyo_studio_tts_autobm_v93') || '{}');
-      if (tabName && bms[tabName]) {
-        if (typeof bms[tabName].lineIdx === 'number') lastLineMap[tabName] = bms[tabName].lineIdx;
-        if (bms[tabName].epTitle) {
-          pushCleanNotification(sw, bms[tabName].epTitle, tabName);
-          return;
-        }
-      }
-    } catch (e) {}
-
-    var epEl = sw.document.getElementById('v93StatusEp');
-    if (epEl && epEl.textContent) pushCleanNotification(sw, epEl.textContent, tabName);
-  }
-
-  function isNearTabEnd(tab, lineIdx) {
-    if (!tab || !tab.text || typeof lineIdx !== 'number') return false;
-    var lines = String(tab.text).split('\n');
-    var lastPlayable = -1;
-    for (var i = lines.length - 1; i >= 0; i--) {
-      var t = lines[i].trim();
-      if (t && t !== '* * *' && !/^[-=*_─━]{3,}$/.test(t)) {
-        lastPlayable = i;
-        break;
-      }
-    }
-    return lastPlayable >= 0 && lineIdx >= Math.max(0, lastPlayable - 1);
-  }
-
-  // 현재 권 완독 시 다음 권(예: 1권 -> 2권) 첫 화부터 자동 재생
-  function tryAdvanceNextVolume(sw) {
-    if (Date.now() < advancingLockUntil) return false;
-    if (!sw || typeof sw.__mobV11AdvanceNextTab !== 'function') return false;
-    var nextInfo = sw.__mobV11AdvanceNextTab();
-    if (!nextInfo) return false;
-
-    advancingLockUntil = Date.now() + 2500;
-    if (sw.__nTts) {
-      sw.__nTts.sig = '';
-      sw.__nTts.items = [];
-    }
-    if (typeof NS.updateLiveEpBadge === 'function') NS.updateLiveEpBadge(sw);
-    if (typeof sw.showToast === 'function') {
-      sw.showToast('📚 다음 권 [' + nextInfo.name + '] 첫 화부터 이어 재생합니다!');
-    }
-    setTimeout(function() {
-      if (typeof sw.v93TtsPlay === 'function') sw.v93TtsPlay(0, 0);
-      syncTopListenBtnUI(sw);
-    }, 80);
-    return true;
-  }
-
-  function hookTtsEngine(sw) {
-    installMediaMetaGuard(sw);
-
-    if (!sw.__mobV11StopGuardBound) {
-      sw.__mobV11StopGuardBound = true;
-      sw.document.addEventListener('pointerdown', function(e) {
-        var b = e.target && e.target.closest ? e.target.closest('button, select, [onclick]') : null;
-        if (!b) return;
-        var oc = (b.getAttribute('onclick') || '') + ' ' + (b.textContent || '');
-        if (/v93TtsStop|v93TtsPause|정지|일시정지|멈춤/.test(oc) || b.hasAttribute('data-mob-tabsel')) {
-          manualStopTs = Date.now();
-        }
-      }, true);
-    }
-
-    if (typeof sw.v93TtsPlay === 'function' && !sw.v93TtsPlay._v11Wrapped) {
-      var origPlay = sw.v93TtsPlay;
-      var wPlay = function() {
-        var r = origPlay.apply(this, arguments);
-        setTimeout(function() {
-          resolveCurrentNotification(sw);
-          syncTopListenBtnUI(sw);
-          if (typeof NS.updateLiveEpBadge === 'function') NS.updateLiveEpBadge(sw);
-        }, 35);
-        return r;
-      };
-      wPlay._v11Wrapped = true;
-      sw.v93TtsPlay = wPlay;
-    }
-
-    if (typeof sw.v93TtsPause === 'function' && !sw.v93TtsPause._v11Wrapped) {
-      var origPause = sw.v93TtsPause;
-      var wPause = function() {
-        manualStopTs = Date.now();
-        var r = origPause.apply(this, arguments);
-        syncTopListenBtnUI(sw);
-        return r;
-      };
-      wPause._v11Wrapped = true;
-      sw.v93TtsPause = wPause;
-    }
-
-    if (typeof sw.v93TtsStop === 'function' && !sw.v93TtsStop._v11Wrapped) {
-      var origStop = sw.v93TtsStop;
-      var wStop = function(arg) {
-        var wasOn = isTtsPlayingNow(sw);
-        var curTab = (typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
-        var lastLn = curTab ? lastLineMap[curTab.name] : -1;
-        var r = origStop.apply(this, arguments);
-        syncTopListenBtnUI(sw);
-        document.title = savedBaseTitle;
-
-        if (!window.AndroidTTS && wasOn && (Date.now() - manualStopTs > 1000)) {
-          if (arg === true || isNearTabEnd(curTab, lastLn)) {
-            tryAdvanceNextVolume(sw);
-          }
-        }
-        return r;
-      };
-      wStop._v11Wrapped = true;
-      sw.v93TtsStop = wStop;
-    }
-
-    if (window.AndroidTTS && typeof window.onNativeTtsIndex === 'function' && !window.onNativeTtsIndex._v11Wrapped) {
-      var origIdx = window.onNativeTtsIndex;
-      var wIdx = function() {
-        var r = origIdx.apply(this, arguments);
-        resolveCurrentNotification(sw);
-        syncTopListenBtnUI(sw);
-        if (typeof NS.updateLiveEpBadge === 'function') NS.updateLiveEpBadge(sw);
-        return r;
-      };
-      wIdx._v11Wrapped = true;
-      window.onNativeTtsIndex = wIdx;
-    }
-
-    if (window.AndroidTTS && typeof window.onNativeTtsDone === 'function' && !window.onNativeTtsDone._v11Wrapped) {
-      var origDone = window.onNativeTtsDone;
-      var wDone = function() {
-        var st = sw.__nTts;
-        if (st && st.playing && !st.paused && (Date.now() - st.t0 > 180) && (st.off + st.len >= st.items.length)) {
-          if (tryAdvanceNextVolume(sw)) return;
-        }
-        var r = origDone.apply(this, arguments);
-        syncTopListenBtnUI(sw);
-        document.title = savedBaseTitle;
-        return r;
-      };
-      wDone._v11Wrapped = true;
-      window.onNativeTtsDone = wDone;
-    }
-  }
-
-  // 고정바 [🎧 듣기] 즉시 토글 연결 + 하단 독을 전용 설정 모달로 분리
-  function setupTtsOptionModalAndListenBtn(sw) {
-    var doc = sw.document;
-    var listenBtn = doc.querySelector('[data-mob-listen-btn="1"]');
-    if (listenBtn && !listenBtn.__mobV11Bound) {
-      listenBtn.__mobV11Bound = true;
-      listenBtn.addEventListener('click', function(ev) {
-        if (!NS.isMobileStudio(sw)) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        ev.stopImmediatePropagation();
-        if (isTtsPlayingNow(sw)) {
-          manualStopTs = Date.now();
-          if (typeof sw.v93TtsPause === 'function') sw.v93TtsPause();
-          else if (typeof sw.v93TtsTogglePlayPause === 'function') sw.v93TtsTogglePlayPause();
-        } else {
-          if (typeof sw.v93TtsPlay === 'function') sw.v93TtsPlay();
-          else if (typeof sw.v93TtsTogglePlayPause === 'function') sw.v93TtsTogglePlayPause();
-        }
-        setTimeout(function() { syncTopListenBtnUI(sw); }, 35);
-      }, true);
-    }
-
-    var dock = doc.getElementById('v93TtsPlayerDock');
-    if (!dock) return;
-
-    var backdrop = doc.getElementById('mobTtsOptionModalBackdrop');
-    if (!backdrop) {
-      backdrop = doc.createElement('div');
-      backdrop.id = 'mobTtsOptionModalBackdrop';
-      backdrop.innerHTML =
-        '<div class="mob-tts-modal-card">' +
-          '<div class="mob-tts-modal-hdr">' +
-            '<span>🎧 듣기 설정 (배속 · 성우 · 이어듣기)</span>' +
-            '<button type="button" class="btn btn-xs" id="btnCloseMobTtsModal">✕ 닫기</button>' +
-          '</div>' +
-          '<div id="mobTtsOptionModalBody"></div>' +
-          '<div class="mob-tts-speed-presets">' +
-            '<button type="button" class="mob-tts-spd-btn" data-spd="0.8">0.8x</button>' +
-            '<button type="button" class="mob-tts-spd-btn" data-spd="1.0">1.0x</button>' +
-            '<button type="button" class="mob-tts-spd-btn" data-spd="1.2">1.2x</button>' +
-            '<button type="button" class="mob-tts-spd-btn" data-spd="1.4">1.4x</button>' +
-            '<button type="button" class="mob-tts-spd-btn" data-spd="1.6">1.6x</button>' +
-            '<button type="button" class="mob-tts-spd-btn" data-spd="2.0">2.0x</button>' +
-          '</div>' +
-        '</div>';
-      backdrop.addEventListener('click', function(ev) {
-        if (ev.target === backdrop || (ev.target && ev.target.id === 'btnCloseMobTtsModal')) {
-          backdrop.classList.remove('open');
-          return;
-        }
-        var sb = ev.target && ev.target.closest ? ev.target.closest('[data-spd]') : null;
-        if (sb && typeof sw.v93ChangeSpeed === 'function') {
-          sw.v93ChangeSpeed(parseFloat(sb.getAttribute('data-spd')), true);
-        }
-      });
-      doc.body.appendChild(backdrop);
-    }
-
-    var bodySlot = doc.getElementById('mobTtsOptionModalBody');
-    if (bodySlot && dock.parentElement !== bodySlot) {
-      bodySlot.appendChild(dock);
-      dock.classList.add('open');
-      dock.querySelectorAll('button').forEach(function(b) {
-        var bt = (b.textContent || '').trim();
-        if (/펼치기/.test(bt)) {
-          try { b.click(); } catch (e) {}
-          b.setAttribute('data-mob-hide-dock-ctrl', '1');
-        } else if (/^(✕|×|닫기)$/.test(bt)) {
-          b.setAttribute('data-mob-hide-dock-ctrl', '1');
-        }
-      });
-    }
-  }
-
-  NS.openTtsModal = function(sw) {
-    var w = sw || (typeof NS.getStudioWin === 'function' ? NS.getStudioWin() : null);
-    if (!w || !w.document) return;
-    setupTtsOptionModalAndListenBtn(w);
-    var modal = w.document.getElementById('mobTtsOptionModalBackdrop');
-    if (modal) modal.classList.add('open');
-  };
-
-  NS.syncPart2 = function(sw) {
-    if (!sw || !sw.document || !sw.document.body) return;
-    if (!NS.isMobileStudio(sw)) {
-      var modalBody = sw.document.getElementById('mobTtsOptionModalBody');
-      var dock = sw.document.getElementById('v93TtsPlayerDock');
-      if (modalBody && dock && dock.parentElement === modalBody) {
-        sw.document.body.appendChild(dock);
-      }
-      return;
-    }
-
-    ensurePart2StyleAndBridge(sw);
-    hookTtsEngine(sw);
-    setupTtsOptionModalAndListenBtn(sw);
-
-    var nowPlaying = isTtsPlayingNow(sw);
-    var prevPlaying = Boolean(wasPlayingMap.get(sw));
-    if (nowPlaying) {
-      resolveCurrentNotification(sw);
-    } else if (prevPlaying && !window.AndroidTTS && (Date.now() - manualStopTs > 1100)) {
-      var curTab = (typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
-      if (curTab && isNearTabEnd(curTab, lastLineMap[curTab.name])) {
-        tryAdvanceNextVolume(sw);
-      }
-    }
-    wasPlayingMap.set(sw, nowPlaying);
-    syncTopListenBtnUI(sw);
-  };
-
-  var initSw = typeof NS.getStudioWin === 'function' ? NS.getStudioWin() : null;
-  if (initSw && typeof NS.syncLayoutPart1 === 'function') {
-    NS.syncLayoutPart1(initSw);
-  }
-})();
-</script>
-<!-- ===== [/모바일 전용 패치 V11 — 파트 2/2 끝] ===== -->
 
 
 </body>
