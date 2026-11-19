@@ -6336,6 +6336,134 @@
 </script>
 <!-- ===== [/모바일: 듣기 실행 시 상단바 밀림 원천 고정 패치 끝] ===== -->
 
+<!-- ==================== [모바일 문단 편집 자동 저장 눌림 방지 패치] ==================== -->
+<script id="magyoMobileInlineEditFix">
+(function() {
+  if (window._MAGYO_INLINE_EDIT_FIX_ACTIVE) return;
+  window._MAGYO_INLINE_EDIT_FIX_ACTIVE = true;
+
+  let inlineEditOpenedAt = 0;
+  let allowExplicitInlineSave = false;
+  let lastTrustedHeaderTapAt = 0;
+
+  // 1. 본문 뷰어 바깥의 상단 수동 저장·탭 버튼을 실제로 터치한 시점만 기록
+  document.addEventListener('pointerdown', function(e) {
+    if (!e.isTrusted) return;
+    const target = e.target;
+    if (!target || !target.closest) return;
+    if (!target.closest('#highlightViewer') && target.closest('button')) {
+      lastTrustedHeaderTapAt = Date.now();
+    }
+  }, true);
+
+  document.addEventListener('keydown', function(e) {
+    if (!e.isTrusted) return;
+    const key = (e.key || '').toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && (key === 's' || key === 'enter')) {
+      lastTrustedHeaderTapAt = Date.now();
+    }
+  }, true);
+
+  // 2. 인라인 편집창 내부 [저장] 버튼 전용 확인 함수 (0.55초 이내 고스트 클릭 차단)
+  window.__confirmInlineSave = function(lineIdx, ev) {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.isTrusted === false) return;
+    }
+    if (Date.now() - inlineEditOpenedAt < 550) return;
+
+    allowExplicitInlineSave = true;
+    try {
+      if (typeof window.saveInlineEdit === 'function') {
+        window.saveInlineEdit(lineIdx);
+      }
+    } finally {
+      allowExplicitInlineSave = false;
+    }
+  };
+
+  function installInlineEditGuards() {
+    // 3. openInlineEdit 보호: 클릭 버블링 차단 및 동일 문단 중복 터치 방지
+    if (typeof window.openInlineEdit === 'function' && !window.openInlineEdit._vFixWrapped) {
+      const origOpen = window.openInlineEdit;
+      const wrappedOpen = function(globalLineIdx, ev) {
+        const activeEv = ev || window.event;
+        if (activeEv && typeof activeEv.stopPropagation === 'function') {
+          activeEv.stopPropagation();
+        }
+        if (typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx === globalLineIdx) {
+          return;
+        }
+        inlineEditOpenedAt = Date.now();
+        allowExplicitInlineSave = false;
+        return origOpen.apply(this, arguments);
+      };
+      wrappedOpen._vFixWrapped = true;
+      window.openInlineEdit = wrappedOpen;
+      try { openInlineEdit = wrappedOpen; } catch (e) {}
+    }
+
+    // 4. saveInlineEdit 보호: 자동 동기화·키보드 팝업(blur)·고스트 터치의 강제 저장 차단
+    if (typeof window.saveInlineEdit === 'function' && !window.saveInlineEdit._vFixWrapped) {
+      const origSave = window.saveInlineEdit;
+      const wrappedSave = function(globalLineIdx) {
+        if (Date.now() - inlineEditOpenedAt < 550) return;
+
+        const isManualHeaderSave = (Date.now() - lastTrustedHeaderTapAt) < 1000;
+        if (!allowExplicitInlineSave && !isManualHeaderSave) {
+          // 사용자가 직접 저장 버튼을 누르지 않은 백그라운드 호출은 무시하고 편집창 유지
+          return;
+        }
+
+        allowExplicitInlineSave = false;
+        return origSave.apply(this, arguments);
+      };
+      wrappedSave._vFixWrapped = true;
+      window.saveInlineEdit = wrappedSave;
+      try { saveInlineEdit = wrappedSave; } catch (e) {}
+    }
+
+    // 5. 단축키(Ctrl+Enter) 및 파일 탭 전환 시 정상 저장 허용
+    if (typeof window.handleInlineKey === 'function' && !window.handleInlineKey._vFixWrapped) {
+      const origKey = window.handleInlineKey;
+      const wrappedKey = function(e, globalLineIdx) {
+        if (e && (e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          allowExplicitInlineSave = true;
+        }
+        return origKey.apply(this, arguments);
+      };
+      wrappedKey._vFixWrapped = true;
+      window.handleInlineKey = wrappedKey;
+      try { handleInlineKey = wrappedKey; } catch (e) {}
+    }
+
+    if (typeof window.switchFileTab === 'function' && !window.switchFileTab._vFixWrapped) {
+      const origSwitch = window.switchFileTab;
+      const wrappedSwitch = function(idx) {
+        allowExplicitInlineSave = true;
+        try {
+          return origSwitch.apply(this, arguments);
+        } finally {
+          allowExplicitInlineSave = false;
+        }
+      };
+      wrappedSwitch._vFixWrapped = true;
+      window.switchFileTab = wrappedSwitch;
+      try { switchFileTab = wrappedSwitch; } catch (e) {}
+    }
+
+    // 6. 편집창 렌더링 직후 0.45초 동안 내부 버튼 터치 관통 물리 잠금 & 스크롤 점프 방지
+    if (typeof window.renderHighlightViewer === 'function' && !window.renderHighlightViewer._vFixWrapped) {
+      const origRender = window.renderHighlightViewer;
+      const wrappedRender = function(preserveScroll) {
+        const res = origRender.apply(this, arguments);
+
+        if (typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx !== null) {
+          const lineIdx = activeEditingLineIdx;
+          const wrap = document.getElementById('editor-row-' + lineIdx);
+
+  
   </body>
 </html>
  
