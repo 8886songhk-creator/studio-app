@@ -6335,135 +6335,316 @@
 })();
 </script>
 <!-- ===== [/모바일: 듣기 실행 시 상단바 밀림 원천 고정 패치 끝] ===== -->
-
-<!-- ==================== [모바일 문단 편집 자동 저장 눌림 방지 패치] ==================== -->
-<script id="magyoMobileInlineEditFix">
+<!-- ==================== [v9.5 모바일·클라우드 문단 편집 자동저장 강제닫힘 완벽 차단 패치] ==================== -->
+<script id="magyoV95InlineEditFix">
 (function() {
-  if (window._MAGYO_INLINE_EDIT_FIX_ACTIVE) return;
-  window._MAGYO_INLINE_EDIT_FIX_ACTIVE = true;
+  if (window._MAGYO_V95_INLINE_FIX) return;
+  window._MAGYO_V95_INLINE_FIX = true;
 
-  let inlineEditOpenedAt = 0;
-  let allowExplicitInlineSave = false;
-  let lastTrustedHeaderTapAt = 0;
+  var inlineOpenedAt = 0;
+  var explicitSaveUntil = 0;
+  var OPEN_COOLDOWN_MS = 550;
 
-  // 1. 본문 뷰어 바깥의 상단 수동 저장·탭 버튼을 실제로 터치한 시점만 기록
-  document.addEventListener('pointerdown', function(e) {
-    if (!e.isTrusted) return;
-    const target = e.target;
-    if (!target || !target.closest) return;
-    if (!target.closest('#highlightViewer') && target.closest('button')) {
-      lastTrustedHeaderTapAt = Date.now();
-    }
-  }, true);
+  function grantSavePermission(ms) {
+    explicitSaveUntil = Date.now() + (ms || 900);
+  }
 
-  document.addEventListener('keydown', function(e) {
-    if (!e.isTrusted) return;
-    const key = (e.key || '').toLowerCase();
-    if ((e.ctrlKey || e.metaKey) && (key === 's' || key === 'enter')) {
-      lastTrustedHeaderTapAt = Date.now();
-    }
-  }, true);
+  function hasSavePermission() {
+    return Date.now() <= explicitSaveUntil;
+  }
 
-  // 2. 인라인 편집창 내부 [저장] 버튼 전용 확인 함수 (0.55초 이내 고스트 클릭 차단)
-  window.__confirmInlineSave = function(lineIdx, ev) {
-    if (ev) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (ev.isTrusted === false) return;
-    }
-    if (Date.now() - inlineEditOpenedAt < 550) return;
+  // 1. 실제 사용자 손가락/마우스 클릭(isTrusted) 및 단축키만 저장 허용
+  function bindTrustedSaveTriggers(doc) {
+    if (!doc || doc._v95TriggersBound) return;
+    doc._v95TriggersBound = true;
 
-    allowExplicitInlineSave = true;
-    try {
-      if (typeof window.saveInlineEdit === 'function') {
-        window.saveInlineEdit(lineIdx);
+    function onUserAction(e) {
+      if (!e || !e.isTrusted) return;
+      var raw = e.target;
+      var el = (raw && raw.nodeType === 1) ? raw : (raw ? raw.parentElement : null);
+      if (!el || !el.closest) return;
+
+      // 문단 편집창 내부 [💾 저장] 버튼 (열린 직후 0.55초 이내 터치 관통은 완전 차단)
+      var inlineSaveBtn = el.closest('.inline-editor-wrap button[onclick*="saveInlineEdit"], .inline-editor-wrap .btn-success');
+      if (inlineSaveBtn) {
+        if (Date.now() - inlineOpenedAt < OPEN_COOLDOWN_MS) {
+          e.stopPropagation();
+          if (e.cancelable) e.preventDefault();
+          return;
+        }
+        grantSavePermission(1200);
+        return;
       }
-    } finally {
-      allowExplicitInlineSave = false;
-    }
-  };
 
+      // 문단 편집창 내부 [취소] 버튼도 열린 직후 0.55초 이내 오터치 차단
+      var inlineCancelBtn = el.closest('.inline-editor-wrap button[onclick*="cancelInlineEdit"]');
+      if (inlineCancelBtn) {
+        if (Date.now() - inlineOpenedAt < OPEN_COOLDOWN_MS) {
+          e.stopPropagation();
+          if (e.cancelable) e.preventDefault();
+        }
+        return;
+      }
+
+      // 상단 수동 저장 버튼 직접 클릭 시 정상 반영 허용
+      var manualSaveBtn = el.closest(
+        '#btnSaveMain, button[onclick*="saveCurrentText"], button[onclick*="saveAsNewFile"], ' +
+        'button[onclick*="downloadAllTabsZip"], button[onclick*="copyEntireCurrentTab"], ' +
+        '.c-btn.save, #cloudBar button[onclick*="save"]'
+      );
+      if (manualSaveBtn && (Date.now() - inlineOpenedAt >= OPEN_COOLDOWN_MS)) {
+        grantSavePermission(1500);
+      }
+    }
+
+    doc.addEventListener('pointerdown', onUserAction, true);
+    try {
+      doc.addEventListener('touchstart', onUserAction, { capture: true, passive: false });
+    } catch (err) {
+      doc.addEventListener('touchstart', onUserAction, true);
+    }
+    doc.addEventListener('mousedown', onUserAction, true);
+    doc.addEventListener('click', onUserAction, true);
+
+    doc.addEventListener('keydown', function(e) {
+      if (!e || !e.isTrusted) return;
+      var k = String(e.key || '').toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && (k === 'enter' || k === 's')) {
+        grantSavePermission(1200);
+      }
+    }, true);
+  }
+
+  // 2. 편집기 열기·저장·렌더링·클라우드 브릿지 일괄 잠금(클라우드 주입 스크립트 이후까지 보장)
   function installInlineEditGuards() {
-    // 3. openInlineEdit 보호: 클릭 버블링 차단 및 동일 문단 중복 터치 방지
-    if (typeof window.openInlineEdit === 'function' && !window.openInlineEdit._vFixWrapped) {
-      const origOpen = window.openInlineEdit;
-      const wrappedOpen = function(globalLineIdx, ev) {
-        const activeEv = ev || window.event;
-        if (activeEv && typeof activeEv.stopPropagation === 'function') {
-          activeEv.stopPropagation();
+    bindTrustedSaveTriggers(document);
+    try {
+      if (window.parent && window.parent !== window && window.parent.document) {
+        bindTrustedSaveTriggers(window.parent.document);
+      }
+    } catch (err) {}
+
+    // (A) saveInlineEdit 잠금: 사용자 직접 클릭·단축키 외 모든 자동 호출 무시
+    if (typeof window.saveInlineEdit === 'function' && !window.saveInlineEdit._v95Wrapped) {
+      var origSaveInline = window.saveInlineEdit;
+      var wrappedSaveInline = function(globalLineIdx) {
+        if (Date.now() - inlineOpenedAt < OPEN_COOLDOWN_MS) return;
+        if (!hasSavePermission()) return;
+        explicitSaveUntil = 0;
+        var res = origSaveInline.apply(this, arguments);
+        if (window._v95DeferredSilentSave) {
+          window._v95DeferredSilentSave = false;
+          try {
+            if (window.parent && typeof window.parent.saveToCloudSilent === 'function') {
+              window.parent.saveToCloudSilent();
+            }
+          } catch (e) {}
         }
-        if (typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx === globalLineIdx) {
-          return;
-        }
-        inlineEditOpenedAt = Date.now();
-        allowExplicitInlineSave = false;
-        return origOpen.apply(this, arguments);
+        return res;
       };
-      wrappedOpen._vFixWrapped = true;
-      window.openInlineEdit = wrappedOpen;
-      try { openInlineEdit = wrappedOpen; } catch (e) {}
+      wrappedSaveInline._v95Wrapped = true;
+      wrappedSaveInline._orig = origSaveInline;
+      saveInlineEdit = window.saveInlineEdit = wrappedSaveInline;
     }
 
-    // 4. saveInlineEdit 보호: 자동 동기화·키보드 팝업(blur)·고스트 터치의 강제 저장 차단
-    if (typeof window.saveInlineEdit === 'function' && !window.saveInlineEdit._vFixWrapped) {
-      const origSave = window.saveInlineEdit;
-      const wrappedSave = function(globalLineIdx) {
-        if (Date.now() - inlineEditOpenedAt < 550) return;
-
-        const isManualHeaderSave = (Date.now() - lastTrustedHeaderTapAt) < 1000;
-        if (!allowExplicitInlineSave && !isManualHeaderSave) {
-          // 사용자가 직접 저장 버튼을 누르지 않은 백그라운드 호출은 무시하고 편집창 유지
-          return;
-        }
-
-        allowExplicitInlineSave = false;
-        return origSave.apply(this, arguments);
+    // (B) cancelInlineEdit 잠금: 열리자마자 손가락 뗄 때 취소 눌림 방지
+    if (typeof window.cancelInlineEdit === 'function' && !window.cancelInlineEdit._v95Wrapped) {
+      var origCancelInline = window.cancelInlineEdit;
+      var wrappedCancelInline = function() {
+        if (Date.now() - inlineOpenedAt < OPEN_COOLDOWN_MS) return;
+        window._v95DeferredSilentSave = false;
+        return origCancelInline.apply(this, arguments);
       };
-      wrappedSave._vFixWrapped = true;
-      window.saveInlineEdit = wrappedSave;
-      try { saveInlineEdit = wrappedSave; } catch (e) {}
+      wrappedCancelInline._v95Wrapped = true;
+      cancelInlineEdit = window.cancelInlineEdit = wrappedCancelInline;
     }
 
-    // 5. 단축키(Ctrl+Enter) 및 파일 탭 전환 시 정상 저장 허용
-    if (typeof window.handleInlineKey === 'function' && !window.handleInlineKey._vFixWrapped) {
-      const origKey = window.handleInlineKey;
-      const wrappedKey = function(e, globalLineIdx) {
-        if (e && (e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-          allowExplicitInlineSave = true;
+    // (C) openInlineEdit 보강: 이벤트 버블링 차단 + 0.55초 버튼 보호막 + 입력창 높이 유지
+    if (typeof window.openInlineEdit === 'function' && !window.openInlineEdit._v95Wrapped) {
+      var origOpenInline = window.openInlineEdit;
+      var wrappedOpenInline = function(globalLineIdx) {
+        if (window.event) {
+          try { window.event.stopPropagation(); } catch (e) {}
         }
-        return origKey.apply(this, arguments);
+        var prevWinY = window.scrollY || window.pageYOffset || 0;
+        inlineOpenedAt = Date.now();
+        explicitSaveUntil = 0;
+        window._v95OpeningInline = true;
+
+        var res = origOpenInline.apply(this, arguments);
+
+        setTimeout(function() { window._v95OpeningInline = false; }, 600);
+
+        var rowWrap = document.getElementById('editor-row-' + globalLineIdx);
+        var ta = document.getElementById('inline-ta-' + globalLineIdx);
+
+        if (rowWrap) {
+          rowWrap.addEventListener('click', function(ev) { ev.stopPropagation(); });
+          var btnRow = rowWrap.querySelector('.btn-row');
+          if (btnRow) {
+            btnRow.style.pointerEvents = 'none';
+            btnRow.style.opacity = '0.55';
+            setTimeout(function() {
+              if (document.body.contains(btnRow)) {
+                btnRow.style.pointerEvents = 'auto';
+                btnRow.style.opacity = '1';
+              }
+            }, OPEN_COOLDOWN_MS);
+          }
+        }
+
+        if (ta) {
+          ta.onblur = null;
+          ta.removeAttribute('onblur');
+          var autoFit = function() {
+            ta.style.height = 'auto';
+            ta.style.height = Math.max(104, ta.scrollHeight + 8) + 'px';
+          };
+          autoFit();
+          ta.addEventListener('input', autoFit);
+          if (document.body.classList.contains('view-mode-mobile')) {
+            window.scrollTo(0, prevWinY);
+            try { ta.focus({ preventScroll: true }); } catch (e) { ta.focus(); }
+          }
+        }
+        return res;
       };
-      wrappedKey._vFixWrapped = true;
-      window.handleInlineKey = wrappedKey;
-      try { handleInlineKey = wrappedKey; } catch (e) {}
+      wrappedOpenInline._v95Wrapped = true;
+      openInlineEdit = window.openInlineEdit = wrappedOpenInline;
     }
 
-    if (typeof window.switchFileTab === 'function' && !window.switchFileTab._vFixWrapped) {
-      const origSwitch = window.switchFileTab;
-      const wrappedSwitch = function(idx) {
-        allowExplicitInlineSave = true;
-        try {
-          return origSwitch.apply(this, arguments);
-        } finally {
-          allowExplicitInlineSave = false;
-        }
-      };
-      wrappedSwitch._vFixWrapped = true;
-      window.switchFileTab = wrappedSwitch;
-      try { switchFileTab = wrappedSwitch; } catch (e) {}
-    }
-
-    // 6. 편집창 렌더링 직후 0.45초 동안 내부 버튼 터치 관통 물리 잠금 & 스크롤 점프 방지
-    if (typeof window.renderHighlightViewer === 'function' && !window.renderHighlightViewer._vFixWrapped) {
-      const origRender = window.renderHighlightViewer;
-      const wrappedRender = function(preserveScroll) {
-        const res = origRender.apply(this, arguments);
-
+    // (D) 백그라운드 재렌더링 시 작성 중인 문장 증발 방지
+    if (typeof window.renderHighlightViewer === 'function' && !window.renderHighlightViewer._v95Wrapped) {
+      var origRenderHl = window.renderHighlightViewer;
+      var wrappedRenderHl = function(preserveScroll) {
+        var draft = null;
         if (typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx !== null) {
-          const lineIdx = activeEditingLineIdx;
-          const wrap = document.getElementById('editor-row-' + lineIdx);
+          var curTa = document.getElementById('inline-ta-' + activeEditingLineIdx);
+          if (curTa) {
+            draft = {
+              idx: activeEditingLineIdx,
+              val: curTa.value,
+              s: curTa.selectionStart,
+              e: curTa.selectionEnd
+            };
+          }
+        }
+        var out = origRenderHl.apply(this, arguments);
+        if (draft && typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx === draft.idx) {
+          var newTa = document.getElementById('inline-ta-' + draft.idx);
+          if (newTa) {
+            newTa.onblur = null;
+            newTa.removeAttribute('onblur');
+            if (newTa.value !== draft.val) newTa.value = draft.val;
+            newTa.style.height = Math.max(104, newTa.scrollHeight + 8) + 'px';
+            try { newTa.setSelectionRange(draft.s, draft.e); } catch (e) {}
+          }
+        }
+        return out;
+      };
+      wrappedRenderHl._v95Wrapped = true;
+      renderHighlightViewer = window.renderHighlightViewer = wrappedRenderHl;
+    }
 
-  
+    // (E) 파일 탭 전환 시에는 열린 편집창 정상 저장 허용
+    ['switchFileTab', 'addNewBlankTab'].forEach(function(fnName) {
+      if (typeof window[fnName] === 'function' && !window[fnName]._v95Wrapped) {
+        var origFn = window[fnName];
+        var wrappedFn = function() {
+          if (typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx !== null && (Date.now() - inlineOpenedAt >= OPEN_COOLDOWN_MS)) {
+            grantSavePermission(600);
+          }
+          return origFn.apply(this, arguments);
+        };
+        wrappedFn._v95Wrapped = true;
+        window[fnName] = wrappedFn;
+        if (fnName === 'switchFileTab') switchFileTab = wrappedFn;
+        if (fnName === 'addNewBlankTab') addNewBlankTab = wrappedFn;
+      }
+    });
+
+    // (F) 클라우드·드라이브 브릿지(__cloudGetWorkspace / saveCurrentText / TTS 일시정지) 강제 저장 차단
+    if (typeof window.__cloudGetWorkspace === 'function' && !window.__cloudGetWorkspace._v95Wrapped) {
+      var origGetWs = window.__cloudGetWorkspace;
+      var wrappedGetWs = function() {
+        if (typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx !== null && !hasSavePermission()) {
+          // 편집창을 닫지 않고 현재 작성 중인 내용만 비파괴 사본으로 전달
+          var tabsCopy = (typeof fileTabs !== 'undefined' ? fileTabs : []).map(function(t, idx) {
+            var txt = t.text || '';
+            if (idx === activeTabIdx) {
+              var openTa = document.getElementById('inline-ta-' + activeEditingLineIdx);
+              if (openTa) {
+                var lines = txt.split('\n');
+                if (activeEditingLineIdx >= 0 && activeEditingLineIdx < lines.length) {
+                  if (openTa.value.trim() === '') {
+                    lines.splice(activeEditingLineIdx, 1);
+                  } else {
+                    Array.prototype.splice.apply(lines, [activeEditingLineIdx, 1].concat(openTa.value.split('\n')));
+                  }
+                  txt = lines.join('\n');
+                }
+              }
+            }
+            return { id: t.id, name: t.name, text: txt, hadCrlf: t.hadCrlf !== false };
+          });
+          return { activeTabIdx: typeof activeTabIdx === 'number' ? activeTabIdx : 0, tabs: tabsCopy };
+        }
+        return origGetWs.apply(this, arguments);
+      };
+      wrappedGetWs._v95Wrapped = true;
+      window.__cloudGetWorkspace = wrappedGetWs;
+    }
+
+    if (typeof window.saveCurrentText === 'function' && !window.saveCurrentText._v95Wrapped) {
+      var origSaveCur = window.saveCurrentText;
+      var wrappedSaveCur = async function() {
+        if (typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx !== null && !hasSavePermission()) {
+          return;
+        }
+        return await origSaveCur.apply(this, arguments);
+      };
+      wrappedSaveCur._v95Wrapped = true;
+      saveCurrentText = window.saveCurrentText = wrappedSaveCur;
+    }
+
+    if (typeof window.v93TtsPause === 'function' && !window.v93TtsPause._v95Wrapped) {
+      var origTtsPause = window.v93TtsPause;
+      var wrappedTtsPause = function() {
+        if (window._v95OpeningInline) {
+          window._v95DeferredSilentSave = true;
+        }
+        return origTtsPause.apply(this, arguments);
+      };
+      wrappedTtsPause._v95Wrapped = true;
+      window.v93TtsPause = wrappedTtsPause;
+    }
+
+    try {
+      if (window.parent && window.parent !== window && typeof window.parent.saveToCloudSilent === 'function' && !window.parent.saveToCloudSilent._v95Wrapped) {
+        var origParentSilent = window.parent.saveToCloudSilent;
+        var wrappedParentSilent = function() {
+          if (window._v95OpeningInline || (typeof activeEditingLineIdx !== 'undefined' && activeEditingLineIdx !== null)) {
+            window._v95DeferredSilentSave = true;
+            return;
+          }
+          return origParentSilent.apply(this, arguments);
+        };
+        wrappedParentSilent._v95Wrapped = true;
+        window.parent.saveToCloudSilent = wrappedParentSilent;
+      }
+    } catch (err) {}
+  }
+
+  installInlineEditGuards();
+  document.addEventListener('DOMContentLoaded', installInlineEditGuards);
+  window.addEventListener('load', installInlineEditGuards);
+  setTimeout(installInlineEditGuards, 0);
+  setTimeout(installInlineEditGuards, 350);
+  setTimeout(installInlineEditGuards, 1200);
+})();
+</script>
+<!-- ==================== [/v9.5 패치 끝] ==================== -->
+
   </body>
 </html>
  
