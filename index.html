@@ -6644,6 +6644,368 @@
 })();
 </script>
 <!-- ==================== [/v9.5 패치 끝] ==================== -->
+<!-- ===== [오디오 듣기 중 다음 화 자동 페이지 전환 & 화면 켜짐 위치 동기화 패치] ===== -->
+<script id="ttsAutoEpisodePageTurnPatch">
+(function() {
+  if (window.__TTS_AUTO_EP_PAGE_TURN_V1) return;
+  window.__TTS_AUTO_EP_PAGE_TURN_V1 = true;
+
+  var BM_KEY = 'magyo_studio_tts_autobm_v93';
+  var lastSyncedTab = '';
+  var lastSyncedEpIdx = -1;
+  var lastSyncedLine = -1;
+  var lastUserDragAt = 0;
+  var pendingWakeSync = false;
+  var pendingBmRec = null;
+  var syncTimer = null;
+
+  function getStudioWin() {
+    var ifr = Document.prototype.getElementById.call(document, 'studioFrame');
+    return (ifr && ifr.contentWindow) ? ifr.contentWindow : null;
+  }
+
+  function isScreenHidden(sw) {
+    if (document.hidden) return true;
+    try { if (sw && sw.document && sw.document.hidden) return true; } catch (e) {}
+    return false;
+  }
+
+  function isTtsActiveNow(sw) {
+    if (!sw || !sw.document) return false;
+    if (window.AndroidTTS && sw.__nTts) {
+      return Boolean(sw.__nTts.playing && !sw.__nTts.paused);
+    }
+    var doc = sw.document;
+    var mb = doc.getElementById('v93BtnPlayMain');
+    if (mb && (mb.classList.contains('is-playing') || /일시정지|멈춤|정지|⏸/.test(mb.textContent || ''))) {
+      return true;
+    }
+    var topBtn = doc.querySelector('[data-mob-listen-btn="1"]');
+    if (topBtn && topBtn.classList.contains('is-tts-on')) return true;
+    var audios = doc.querySelectorAll('audio');
+    for (var i = 0; i < audios.length; i++) {
+      if (!audios[i].paused && !audios[i].ended && audios[i].currentSrc) return true;
+    }
+    try {
+      if (sw.speechSynthesis && sw.speechSynthesis.speaking && !sw.speechSynthesis.paused) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function findOptionValueForEp(sel, epIdx, episodes) {
+    if (!sel || !sel.options || !sel.options.length || epIdx < 0) return null;
+    var opts = sel.options;
+    var hasZero = false;
+    for (var i = 0; i < opts.length; i++) {
+      if (opts[i].value === '0') { hasZero = true; break; }
+    }
+    if (hasZero) {
+      var want = String(epIdx);
+      for (var j = 0; j < opts.length; j++) {
+        if (opts[j].value === want) return want;
+      }
+    }
+    if (episodes && opts.length === episodes.length + 1 && /all|전체|모두/i.test((opts[0].value || '') + ' ' + (opts[0].text || ''))) {
+      return opts[epIdx + 1].value;
+    }
+    if (episodes && opts.length === episodes.length) {
+      return opts[epIdx].value;
+    }
+    for (var k = 0; k < opts.length; k++) {
+      if (opts[k].value === 'ep_' + epIdx || opts[k].value === String(epIdx)) return opts[k].value;
+    }
+    return null;
+  }
+
+  function resolveCurrentAudioTarget(sw, bmOverride) {
+    var tab = (sw && typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
+    if (!tab || !String(tab.text || '').trim()) return null;
+
+    var lineIdx = -1;
+    var epIdx = -1;
+
+    if (window.AndroidTTS && sw.__nTts && sw.__nTts.items && sw.__nTts.items[sw.__nTts.cur]) {
+      var nit = sw.__nTts.items[sw.__nTts.cur];
+      lineIdx = nit.lineIdx;
+      if (typeof nit.epIdx === 'number') epIdx = nit.epIdx;
+    }
+
+    if (lineIdx < 0 && bmOverride && (!bmOverride.fileName || bmOverride.fileName === tab.name) && typeof bmOverride.lineIdx === 'number') {
+      lineIdx = bmOverride.lineIdx;
+      if (typeof bmOverride.epIdx === 'number') epIdx = bmOverride.epIdx;
+    }
+
+    if (lineIdx < 0) {
+      try {
+        var bms = JSON.parse(localStorage.getItem(BM_KEY) || '{}') || {};
+        var rec = bms[tab.name] || (bms.__LAST__ && bms.__LAST__.fileName === tab.name ? bms.__LAST__ : null);
+        if (rec && typeof rec.lineIdx === 'number') {
+          lineIdx = rec.lineIdx;
+          if (typeof rec.epIdx === 'number') epIdx = rec.epIdx;
+        }
+      } catch (e) {}
+    }
+
+    if (lineIdx < 0 && sw.document) {
+      var epEl = sw.document.getElementById('v93StatusEp');
+      if (epEl && epEl.textContent) {
+        var m = epEl.textContent.match(/(\d+)\s*\/\s*\d+\s*줄/) || epEl.textContent.match(/(\d+)\s*줄/);
+        if (m) lineIdx = Math.max(0, parseInt(m[1], 10) - 1);
+      }
+    }
+
+    if (lineIdx < 0) return null;
+
+    var curEp = null;
+    if (Array.isArray(tab.episodes) && tab.episodes.length > 0) {
+      for (var i = 0; i < tab.episodes.length; i++) {
+        var ep = tab.episodes[i];
+        if (lineIdx >= ep.startLine && lineIdx < ep.startLine + ep.lines.length) {
+          epIdx = i;
+          curEp = ep;
+          break;
+        }
+      }
+    }
+
+    return { tab: tab, lineIdx: lineIdx, epIdx: epIdx, ep: curEp };
+  }
+
+  function findRowOrProbeInViewer(doc, targetLine, curEp) {
+    var row = doc.querySelector('#highlightViewer .p-row[data-line="' + targetLine + '"], #highlightViewer [data-line="' + targetLine + '"]');
+    var isHeader = Boolean(curEp && targetLine === curEp.startLine && curEp.hasExplicitHeader);
+    var probeLine = targetLine;
+
+    if (!row && curEp && Array.isArray(curEp.lines)) {
+      for (var l = Math.max(0, targetLine - curEp.startLine); l < curEp.lines.length; l++) {
+        if (l === 0 && curEp.hasExplicitHeader) continue;
+        var t = String(curEp.lines[l] || '').trim();
+        if (t && t !== '* * *' && !/^[-=*_─━]{3,}$/.test(t)) {
+          probeLine = curEp.startLine + l;
+          break;
+        }
+      }
+      if (probeLine !== targetLine) {
+        row = doc.querySelector('#highlightViewer .p-row[data-line="' + probeLine + '"], #highlightViewer [data-line="' + probeLine + '"]');
+      }
+    }
+    return { row: row, isHeader: isHeader, probeLine: probeLine };
+  }
+
+  function syncViewerToAudioPosition(sw, opts) {
+    var o = opts || {};
+    if (!sw || !sw.document || !sw.document.body) return;
+    if (!o.force && !isTtsActiveNow(sw)) return;
+
+    if (isScreenHidden(sw)) {
+      pendingWakeSync = true;
+      if (o.bmRecord) pendingBmRec = o.bmRecord;
+      return;
+    }
+
+    var doc = sw.document;
+    if (typeof sw.activeEditingLineIdx === 'number') return;
+
+    var target = resolveCurrentAudioTarget(sw, o.bmRecord);
+    if (!target) return;
+
+    var tabChanged = (target.tab.name !== lastSyncedTab);
+    var epChanged = tabChanged || (target.epIdx >= 0 && target.epIdx !== lastSyncedEpIdx);
+
+    var hlTab = doc.getElementById('tabHighlight');
+    var hlVisible = !hlTab || hlTab.classList.contains('active');
+
+    var found = findRowOrProbeInViewer(doc, target.lineIdx, target.ep);
+    var switchedEp = false;
+
+    // 현재 읽는 문단(또는 해당 화 첫 본문 문단)이 뷰어에 없으면 회차 선택창을 즉시 다음 화로 전환
+    if (!found.row && target.epIdx >= 0) {
+      var selects = doc.querySelectorAll('[data-mob-fixed-vbar="1"] select, #tabHighlight select, header select');
+      for (var s = 0; s < selects.length; s++) {
+        var sel = selects[s];
+        if (sel.hasAttribute('data-mob-tabsel') || (sel.closest && sel.closest('[data-mob-tabsel="1"]'))) continue;
+        if (sel.id === 'cardFileSelect' || sel.id === 'dashScopeSelect' || sel.id === 'v95TransferModeSelect' || sel.classList.contains('v97-mode-select')) continue;
+        var nextVal = findOptionValueForEp(sel, target.epIdx, target.tab.episodes);
+        if (nextVal !== null && sel.value !== nextVal) {
+          sel.value = nextVal;
+          try { sel.dispatchEvent(new sw.Event('change', { bubbles: true })); } catch (e) {}
+          switchedEp = true;
+        }
+      }
+      if (switchedEp) {
+        found = findRowOrProbeInViewer(doc, target.lineIdx, target.ep);
+      }
+    }
+
+    lastSyncedTab = target.tab.name;
+    if (target.epIdx >= 0) lastSyncedEpIdx = target.epIdx;
+    lastSyncedLine = target.lineIdx;
+
+    if (!hlVisible || !found.row) {
+      if (window.__MOB_V12 && typeof window.__MOB_V12.updateLiveEpBadge === 'function') {
+        window.__MOB_V12.updateLiveEpBadge(sw);
+      }
+      return;
+    }
+
+    var row = found.row;
+    var alreadyActive = (!found.isHeader && row.classList.contains('v93-tts-row-active'));
+
+    doc.querySelectorAll('#highlightViewer .v93-tts-row-active').forEach(function(el) {
+      if (el !== row) el.classList.remove('v93-tts-row-active');
+    });
+    if (!found.isHeader) row.classList.add('v93-tts-row-active');
+
+    var userDraggingNow = (!o.force && !switchedEp && !epChanged && (Date.now() - lastUserDragAt < 3500));
+    if (!userDraggingNow && (o.force || switchedEp || epChanged || !alreadyActive)) {
+      var scrollTarget = row;
+      if (found.isHeader) {
+        var prev = row.previousElementSibling;
+        while (prev && !prev.classList.contains('ep-header-chip')) prev = prev.previousElementSibling;
+        if (prev) scrollTarget = prev;
+      }
+      scrollTarget.scrollIntoView({
+        behavior: (switchedEp || o.force) ? 'auto' : 'smooth',
+        block: 'center'
+      });
+    }
+
+    if (window.__MOB_V12 && typeof window.__MOB_V12.updateLiveEpBadge === 'function') {
+      window.__MOB_V12.updateLiveEpBadge(sw);
+      if (switchedEp || epChanged) {
+        setTimeout(function() { window.__MOB_V12.updateLiveEpBadge(sw); }, 140);
+      }
+    }
+  }
+
+  function scheduleSync(sw, opts) {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(function() {
+      syncViewerToAudioPosition(sw || getStudioWin(), opts);
+    }, 22);
+  }
+
+  function hookStoragePrototype(win) {
+    if (!win || !win.Storage || !win.Storage.prototype || win.Storage.prototype.__epTurnHooked) return;
+    win.Storage.prototype.__epTurnHooked = true;
+    var origSet = win.Storage.prototype.setItem;
+    win.Storage.prototype.setItem = function(key, val) {
+      var res = origSet.apply(this, arguments);
+      if (key === BM_KEY && typeof val === 'string') {
+        try {
+          var parsed = JSON.parse(val);
+          var rec = parsed && parsed.__LAST__ ? parsed.__LAST__ : null;
+          var sw = getStudioWin();
+          if (sw) {
+            if (isScreenHidden(sw)) {
+              pendingWakeSync = true;
+              pendingBmRec = rec;
+            } else {
+              scheduleSync(sw, { bmRecord: rec });
+            }
+          }
+        } catch (e) {}
+      }
+      return res;
+    };
+  }
+  hookStoragePrototype(window);
+
+  function bindStudioHooks(sw) {
+    if (!sw || !sw.document || !sw.document.body) return;
+    hookStoragePrototype(sw);
+
+    if (window.AndroidTTS && typeof window.onNativeTtsIndex === 'function' && !window.onNativeTtsIndex.__epTurnWrapped) {
+      var origIdx = window.onNativeTtsIndex;
+      var wrappedIdx = function() {
+        var r = origIdx.apply(this, arguments);
+        scheduleSync(getStudioWin() || sw, {});
+        return r;
+      };
+      wrappedIdx.__epTurnWrapped = true;
+      wrappedIdx._v12Wrapped = Boolean(origIdx._v12Wrapped);
+      window.onNativeTtsIndex = wrappedIdx;
+    }
+
+    ['v93TtsStepParagraph', 'v93TtsStepSentence'].forEach(function(fn) {
+      if (typeof sw[fn] === 'function' && !sw[fn].__epTurnWrapped) {
+        var origStep = sw[fn];
+        var wrappedStep = function() {
+          var r = origStep.apply(this, arguments);
+          setTimeout(function() { syncViewerToAudioPosition(sw, { force: true }); }, 240);
+          return r;
+        };
+        wrappedStep.__epTurnWrapped = true;
+        sw[fn] = wrappedStep;
+      }
+    });
+
+    if (!sw.__epTurnDomBound) {
+      sw.__epTurnDomBound = true;
+      var doc = sw.document;
+
+      var markUserScroll = function() { lastUserDragAt = Date.now(); };
+      doc.addEventListener('touchmove', markUserScroll, { passive: true, capture: true });
+      doc.addEventListener('wheel', markUserScroll, { passive: true, capture: true });
+
+      doc.addEventListener('visibilitychange', function() {
+        if (!doc.hidden && (pendingWakeSync || isTtsActiveNow(sw))) {
+          var rec = pendingBmRec;
+          pendingWakeSync = false;
+          syncViewerToAudioPosition(sw, { force: true, bmRecord: rec });
+          setTimeout(function() { syncViewerToAudioPosition(sw, { force: true, bmRecord: rec }); }, 180);
+        }
+      });
+
+      var statusTarget = doc.getElementById('v93StatusEp') || doc.getElementById('v93TtsPlayerDock');
+      if (statusTarget && typeof sw.MutationObserver === 'function') {
+        var mo = new sw.MutationObserver(function() {
+          if (isTtsActiveNow(sw)) scheduleSync(sw, {});
+        });
+        mo.observe(statusTarget, { childList: true, subtree: true, characterData: true });
+      }
+    }
+  }
+
+  function handleWakeUp() {
+    var sw = getStudioWin();
+    if (!sw || isScreenHidden(sw)) return;
+    if (pendingWakeSync || isTtsActiveNow(sw)) {
+      var rec = pendingBmRec;
+      pendingWakeSync = false;
+      syncViewerToAudioPosition(sw, { force: true, bmRecord: rec });
+      setTimeout(function() { syncViewerToAudioPosition(sw, { force: true, bmRecord: rec }); }, 180);
+    }
+  }
+
+  document.addEventListener('visibilitychange', handleWakeUp);
+  window.addEventListener('focus', handleWakeUp);
+  window.addEventListener('pageshow', handleWakeUp);
+
+  var prevReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    if (typeof prevReady === 'function') prevReady.apply(this, arguments);
+    lastSyncedTab = '';
+    lastSyncedEpIdx = -1;
+    lastSyncedLine = -1;
+    bindStudioHooks(sw);
+    setTimeout(function() { bindStudioHooks(sw); }, 400);
+  };
+
+  setInterval(function() {
+    var sw = getStudioWin();
+    if (!sw) return;
+    bindStudioHooks(sw);
+    if (isTtsActiveNow(sw) && !isScreenHidden(sw)) {
+      var t = resolveCurrentAudioTarget(sw, null);
+      if (t && (t.tab.name !== lastSyncedTab || t.epIdx !== lastSyncedEpIdx || t.lineIdx !== lastSyncedLine)) {
+        syncViewerToAudioPosition(sw, {});
+      }
+    }
+  }, 650);
+})();
+</script>
+<!-- ===== [/오디오 듣기 중 다음 화 자동 페이지 전환 패치 끝] ===== -->
 
   </body>
 </html>
