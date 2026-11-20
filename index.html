@@ -7006,6 +7006,440 @@
 })();
 </script>
 <!-- ===== [/오디오 듣기 중 다음 화 자동 페이지 전환 패치 끝] ===== -->
+<!-- ===== [앱 재실행 시 마지막 읽던·듣던 회차 및 문단 자동 복원 패치] ===== -->
+<script id="bootEpisodeResumePatch">
+(function() {
+  if (window.__BOOT_EPISODE_RESUME_V1) return;
+  window.__BOOT_EPISODE_RESUME_V1 = true;
+
+  // 서버 동기화(magyo_* 덮어쓰기)에 지워지지 않는 기기 전용 키
+  var STATE_KEY = 'studio_last_read_state_v1';
+  var BM_KEY = 'magyo_studio_tts_autobm_v93';
+  var origSetItem = Storage.prototype.setItem;
+  var scrollSaveTimer = null;
+  var manualPulling = false;
+
+  function getStudioWin() {
+    var ifr = Document.prototype.getElementById.call(document, 'studioFrame');
+    return (ifr && ifr.contentWindow) ? ifr.contentWindow : null;
+  }
+
+  function loadState() {
+    try {
+      var s = JSON.parse(localStorage.getItem(STATE_KEY) || 'null');
+      if (s && typeof s === 'object') {
+        if (!s.tabs) s.tabs = {};
+        if (!s.ttsBms) s.ttsBms = {};
+        return s;
+      }
+    } catch (e) {}
+    return { activeTabName: '', tabs: {}, ttsBms: {} };
+  }
+
+  function writeState(st) {
+    try { origSetItem.call(localStorage, STATE_KEY, JSON.stringify(st)); } catch (e) {}
+  }
+
+  function isBlankTabName(name) {
+    var s = String(name || '').trim();
+    return !s || /^원고없음(?:\.(?:txt|md))?$/i.test(s);
+  }
+
+  function getEpisodeSelects(doc) {
+    var out = [];
+    if (!doc) return out;
+    var sels = doc.querySelectorAll('[data-mob-fixed-vbar="1"] select, #tabHighlight select, header select');
+    for (var i = 0; i < sels.length; i++) {
+      var sel = sels[i];
+      if (sel.hasAttribute('data-mob-tabsel') || (sel.closest && sel.closest('[data-mob-tabsel="1"]'))) continue;
+      if (sel.id === 'cardFileSelect' || sel.id === 'dashScopeSelect' || sel.id === 'v95TransferModeSelect' || sel.classList.contains('v97-mode-select')) continue;
+      out.push(sel);
+    }
+    return out;
+  }
+
+  function findOptionValueForEp(sel, epIdx, episodes) {
+    if (!sel || !sel.options || !sel.options.length || epIdx < 0) return null;
+    var opts = sel.options;
+    var hasZero = false;
+    for (var i = 0; i < opts.length; i++) {
+      if (opts[i].value === '0') { hasZero = true; break; }
+    }
+    if (hasZero) {
+      var want = String(epIdx);
+      for (var j = 0; j < opts.length; j++) {
+        if (opts[j].value === want) return want;
+      }
+    }
+    if (episodes && opts.length === episodes.length + 1 && /all|전체|모두/i.test((opts[0].value || '') + ' ' + (opts[0].text || ''))) {
+      return opts[epIdx + 1].value;
+    }
+    if (episodes && opts.length === episodes.length) {
+      return opts[epIdx].value;
+    }
+    for (var k = 0; k < opts.length; k++) {
+      if (opts[k].value === 'ep_' + epIdx || opts[k].value === String(epIdx)) return opts[k].value;
+    }
+    return null;
+  }
+
+  function detectPreferSingleEp(doc, prevVal) {
+    var sels = getEpisodeSelects(doc);
+    if (!sels.length) return typeof prevVal === 'boolean' ? prevVal : true;
+    var val = String(sels[0].value || '');
+    if (!val) return typeof prevVal === 'boolean' ? prevVal : true;
+    return !/^all$/i.test(val);
+  }
+
+  function ensureLexTabSwitcher(sw) {
+    if (!sw || !sw.document || !sw.document.body || sw.__resumeLexReady) return;
+    var sc = sw.document.createElement('script');
+    sc.id = 'resumeLexTabSwitcher';
+    sc.textContent = [
+      '(function(){',
+      '  window.__resumeLexReady = true;',
+      '  window.__resumeSwitchTabByName = function(targetName) {',
+      '    if (!targetName || typeof fileTabs === "undefined" || !Array.isArray(fileTabs)) return false;',
+      '    var curIdx = typeof activeTabIdx === "number" ? activeTabIdx : 0;',
+      '    if (fileTabs[curIdx] && fileTabs[curIdx].name === targetName) return false;',
+      '    var found = -1;',
+      '    for (var i = 0; i < fileTabs.length; i++) {',
+      '      if (fileTabs[i] && fileTabs[i].name === targetName) { found = i; break; }',
+      '    }',
+      '    if (found === -1) return false;',
+      '    activeTabIdx = found;',
+      '    if (typeof activeEditingLineIdx !== "undefined") activeEditingLineIdx = null;',
+      '    var t = fileTabs[found];',
+      '    var mTa = document.getElementById("masterText");',
+      '    if (mTa && t) mTa.value = t.text;',
+      '    if (typeof analyzeSingleTabOnly === "function") analyzeSingleTabOnly(t, false);',
+      '    else if (typeof analyzeAllTabs === "function") analyzeAllTabs(false);',
+      '    if (typeof renderFileTabBar === "function") renderFileTabBar();',
+      '    if (typeof refreshActiveTabViews === "function") refreshActiveTabViews(false);',
+      '    return true;',
+      '  };',
+      '})();'
+    ].join('\n');
+    sw.document.body.appendChild(sc);
+  }
+
+  // 1. 현재 화면에서 읽고 있는 회차·문단 저장 (사용자 조작 시에만 기록)
+  function saveVisibleReadingState(sw) {
+    if (!sw || !sw.document || !sw.__resumeBootDone || sw.__resumeRestoring) return;
+    if (!sw.__userTouchedViewer) return;
+
+    var tab = (typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
+    if (!tab || tab._driveUnlinked || !String(tab.text || '').trim() || isBlankTabName(tab.name)) return;
+
+    var doc = sw.document;
+    var viewer = doc.getElementById('highlightViewer');
+    if (!viewer) return;
+
+    var hdr = doc.querySelector('[data-mob-main-hdr="1"]') || doc.querySelector('header');
+    var probeY = (hdr ? Math.max(0, hdr.getBoundingClientRect().bottom) : 76) + 22;
+
+    var lineIdx = -1;
+    var rows = viewer.querySelectorAll('.p-row[data-line]');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getBoundingClientRect().bottom >= probeY) {
+        var gl = parseInt(rows[i].getAttribute('data-line'), 10);
+        if (!isNaN(gl)) { lineIdx = gl; break; }
+      }
+    }
+
+    var epIdx = -1;
+    var sels = getEpisodeSelects(doc);
+    if (lineIdx < 0 && sels.length > 0 && Array.isArray(tab.episodes)) {
+      var sv = parseInt(sels[0].value, 10);
+      if (!isNaN(sv) && tab.episodes[sv]) {
+        epIdx = sv;
+        lineIdx = tab.episodes[sv].startLine;
+      }
+    }
+    if (lineIdx < 0) return;
+
+    if (Array.isArray(tab.episodes)) {
+      for (var e = 0; e < tab.episodes.length; e++) {
+        var ep = tab.episodes[e];
+        if (lineIdx >= ep.startLine && lineIdx < ep.startLine + ep.lines.length) {
+          epIdx = e;
+          break;
+        }
+      }
+    }
+
+    var lines = String(tab.text).split('\n');
+    var snippet = String(lines[lineIdx] || '').trim().slice(0, 40);
+    var st = loadState();
+    var prev = st.tabs[tab.name] || {};
+
+    st.activeTabName = tab.name;
+    st.tabs[tab.name] = {
+      epIdx: epIdx >= 0 ? epIdx : (prev.epIdx || 0),
+      lineIdx: lineIdx,
+      sentIdx: 0,
+      snippet: snippet,
+      preferSingleEp: detectPreferSingleEp(doc, prev.preferSingleEp),
+      updatedAt: Date.now()
+    };
+    writeState(st);
+  }
+
+  // 2. 오디오(TTS) 재생 위치 실시간 백업 (화면이 꺼져 있어도 즉시 저장)
+  function saveTtsReadingState(sw, bmRec) {
+    if (!bmRec || isBlankTabName(bmRec.fileName) || typeof bmRec.lineIdx !== 'number') return;
+    var st = loadState();
+    var tName = bmRec.fileName;
+    var prev = st.tabs[tName] || {};
+    var doc = sw && sw.document ? sw.document : null;
+
+    st.activeTabName = tName;
+    st.ttsBms[tName] = Object.assign({}, bmRec, { savedAt: Date.now() });
+    st.tabs[tName] = {
+      epIdx: typeof bmRec.epIdx === 'number' ? bmRec.epIdx : (prev.epIdx || 0),
+      lineIdx: bmRec.lineIdx,
+      sentIdx: bmRec.sentIdx || 0,
+      snippet: String(bmRec.snippet || prev.snippet || '').slice(0, 40),
+      preferSingleEp: doc ? detectPreferSingleEp(doc, prev.preferSingleEp) : (typeof prev.preferSingleEp === 'boolean' ? prev.preferSingleEp : true),
+      updatedAt: Date.now()
+    };
+    writeState(st);
+  }
+
+  // 서버의 예전 북마크가 로컬 최신 이어듣기 위치를 덮어쓰지 못하도록 복구
+  function restoreProtectedTtsBookmarks(st) {
+    if (manualPulling || !st || !st.ttsBms) return;
+    var keys = Object.keys(st.ttsBms);
+    if (!keys.length) return;
+    try {
+      var curBms = JSON.parse(localStorage.getItem(BM_KEY) || '{}') || {};
+      keys.forEach(function(k) {
+        if (st.ttsBms[k]) curBms[k] = st.ttsBms[k];
+      });
+      if (st.activeTabName && st.ttsBms[st.activeTabName]) {
+        curBms.__LAST__ = st.ttsBms[st.activeTabName];
+      }
+      origSetItem.call(localStorage, BM_KEY, JSON.stringify(curBms));
+    } catch (e) {}
+  }
+
+  // 3. 앱 실행 시 마지막 읽던 권·회차·문단으로 뷰어 즉시 복원
+  function applyBootRestoreOnce(sw) {
+    if (!sw || !sw.document || !sw.document.body) return false;
+    var st = loadState();
+    restoreProtectedTtsBookmarks(st);
+
+    ensureLexTabSwitcher(sw);
+    if (st.activeTabName && typeof sw.__resumeSwitchTabByName === 'function') {
+      sw.__resumeSwitchTabByName(st.activeTabName);
+    }
+
+    var tab = (typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
+    if (!tab || !String(tab.text || '').trim() || isBlankTabName(tab.name)) return false;
+
+    var saved = st.tabs[tab.name];
+    if (!saved || typeof saved.lineIdx !== 'number') return false;
+
+    var lines = String(tab.text).split('\n');
+    if (!lines.length) return false;
+
+    var targetLine = Math.max(0, Math.min(saved.lineIdx, lines.length - 1));
+    var snip = String(saved.snippet || '').trim().slice(0, 24);
+    if (snip.length >= 6 && (!lines[targetLine] || lines[targetLine].indexOf(snip) === -1)) {
+      for (var d = 1; d < lines.length; d++) {
+        var dn = targetLine + d, up = targetLine - d;
+        if (dn < lines.length && lines[dn].indexOf(snip) !== -1) { targetLine = dn; break; }
+        if (up >= 0 && lines[up].indexOf(snip) !== -1) { targetLine = up; break; }
+      }
+    }
+
+    var targetEpIdx = typeof saved.epIdx === 'number' ? saved.epIdx : -1;
+    var curEp = null;
+    if (Array.isArray(tab.episodes) && tab.episodes.length > 0) {
+      for (var i = 0; i < tab.episodes.length; i++) {
+        var ep = tab.episodes[i];
+        if (targetLine >= ep.startLine && targetLine < ep.startLine + ep.lines.length) {
+          targetEpIdx = i;
+          curEp = ep;
+          break;
+        }
+      }
+      if (!curEp && targetEpIdx >= 0 && tab.episodes[targetEpIdx]) {
+        curEp = tab.episodes[targetEpIdx];
+      }
+    }
+
+    var doc = sw.document;
+    var probeRow = doc.querySelector('#highlightViewer .p-row[data-line="' + targetLine + '"], #highlightViewer [data-line="' + targetLine + '"]');
+
+    // 단일 회차 모드였거나 현재 화면에 해당 줄이 없으면 해당 회차로 드롭다운 즉시 전환
+    if (targetEpIdx >= 0 && (saved.preferSingleEp !== false || !probeRow)) {
+      var sels = getEpisodeSelects(doc);
+      for (var s = 0; s < sels.length; s++) {
+        var nextVal = findOptionValueForEp(sels[s], targetEpIdx, tab.episodes);
+        if (nextVal !== null && sels[s].value !== nextVal) {
+          sels[s].value = nextVal;
+          try { sels[s].dispatchEvent(new sw.Event('change', { bubbles: true })); } catch (e) {}
+        }
+      }
+    }
+
+    // 회차 첫머리면 맨 위로, 중간 문단이면 해당 문단 정중앙으로 이동
+    var nearEpTop = Boolean(curEp && targetLine <= curEp.startLine + 1 && saved.preferSingleEp !== false);
+    if (nearEpTop) {
+      try { sw.scrollTo(0, 0); } catch (e) {}
+      var viewer = doc.getElementById('highlightViewer');
+      if (viewer) viewer.scrollTop = 0;
+    } else {
+      var row = doc.querySelector('#highlightViewer .p-row[data-line="' + targetLine + '"], #highlightViewer [data-line="' + targetLine + '"]');
+      if (!row && curEp && Array.isArray(curEp.lines)) {
+        for (var l = Math.max(0, targetLine - curEp.startLine); l < curEp.lines.length; l++) {
+          var cand = doc.querySelector('#highlightViewer .p-row[data-line="' + (curEp.startLine + l) + '"]');
+          if (cand) { row = cand; break; }
+        }
+      }
+      if (row) {
+        row.scrollIntoView({ behavior: 'auto', block: 'center' });
+      }
+    }
+
+    if (window.__MOB_V12 && typeof window.__MOB_V12.updateLiveEpBadge === 'function') {
+      window.__MOB_V12.updateLiveEpBadge(sw);
+    }
+    return true;
+  }
+
+  function hookStorageWrite(win) {
+    if (!win || !win.Storage || !win.Storage.prototype || win.Storage.prototype.__resumeBootHooked) return;
+    win.Storage.prototype.__resumeBootHooked = true;
+    var prevSet = win.Storage.prototype.setItem;
+    win.Storage.prototype.setItem = function(key, val) {
+      var r = prevSet.apply(this, arguments);
+      if (key === BM_KEY && typeof val === 'string' && !manualPulling) {
+        var sw = getStudioWin();
+        if (sw && sw.__resumeRestoring) return r;
+        try {
+          var parsed = JSON.parse(val);
+          var rec = parsed && parsed.__LAST__ ? parsed.__LAST__ : null;
+          if (rec) saveTtsReadingState(sw, rec);
+        } catch (e) {}
+      }
+      return r;
+    };
+  }
+  hookStorageWrite(window);
+
+  function attachStudioSession(sw) {
+    if (!sw || !sw.document || !sw.document.body || sw.__resumeSessionAttached) return;
+    sw.__resumeSessionAttached = true;
+    sw.__resumeRestoring = true;
+    sw.__resumeBootDone = false;
+    sw.__userTouchedViewer = false;
+
+    hookStorageWrite(sw);
+    var doc = sw.document;
+
+    // 사용자가 직접 터치·휠·회차선택을 했을 때만 수동 스크롤 저장 활성화
+    var markTouch = function(e) {
+      if (!e || !e.isTrusted) return;
+      sw.__userTouchedViewer = true;
+      sw.__resumeRestoring = false;
+      sw.__resumeBootDone = true;
+    };
+    doc.addEventListener('touchstart', markTouch, { passive: true, capture: true });
+    doc.addEventListener('wheel', markTouch, { passive: true, capture: true });
+    doc.addEventListener('mousedown', markTouch, { passive: true, capture: true });
+
+    var onScrollDebounced = function() {
+      if (!sw.__userTouchedViewer || sw.__resumeRestoring) return;
+      clearTimeout(scrollSaveTimer);
+      scrollSaveTimer = setTimeout(function() { saveVisibleReadingState(sw); }, 220);
+    };
+    sw.addEventListener('scroll', onScrollDebounced, { passive: true, capture: true });
+    doc.addEventListener('scroll', onScrollDebounced, { passive: true, capture: true });
+
+    doc.addEventListener('change', function(e) {
+      if (!e || !e.isTrusted) return;
+      sw.__userTouchedViewer = true;
+      sw.__resumeRestoring = false;
+      sw.__resumeBootDone = true;
+      setTimeout(function() { saveVisibleReadingState(sw); }, 80);
+    }, true);
+
+    // 모바일 상단바 높이 계산이 끝나는 시점에 맞춰 정밀 보정 후 복원 종료
+    applyBootRestoreOnce(sw);
+    [160, 420, 750].forEach(function(ms, idx) {
+      setTimeout(function() {
+        if (!sw.__userTouchedViewer && sw.__resumeRestoring) {
+          applyBootRestoreOnce(sw);
+        }
+        if (idx === 2) {
+          sw.__resumeRestoring = false;
+          sw.__resumeBootDone = true;
+        }
+      }, ms);
+    });
+  }
+
+  // 앱이 백그라운드로 내려가거나 종료되기 직전 마지막 위치 즉시 확정
+  function flushBeforeClose() {
+    clearTimeout(scrollSaveTimer);
+    var sw = getStudioWin();
+    if (sw && sw.__userTouchedViewer && !sw.__resumeRestoring) {
+      saveVisibleReadingState(sw);
+    }
+  }
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) flushBeforeClose();
+  });
+  window.addEventListener('pagehide', flushBeforeClose);
+  window.addEventListener('beforeunload', flushBeforeClose);
+
+  // [전체삭제] 실행 시 저장된 위치 기록도 함께 초기화
+  if (typeof window.clearAllAppManuscriptsSafely === 'function' && !window.clearAllAppManuscriptsSafely.__resumeWrapped) {
+    var origClear = window.clearAllAppManuscriptsSafely;
+    var wrappedClear = async function() {
+      var r = await origClear.apply(this, arguments);
+      var sw = getStudioWin();
+      var tab = (sw && typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
+      if (tab && isBlankTabName(tab.name)) {
+        try { localStorage.removeItem(STATE_KEY); } catch (e) {}
+      }
+      return r;
+    };
+    wrappedClear.__resumeWrapped = true;
+    window.clearAllAppManuscriptsSafely = wrappedClear;
+  }
+
+  // [서버 불러오기]를 수동으로 눌렀을 때는 서버 이어듣기 위치를 허용
+  if (typeof window.pullFromCloudNow === 'function' && !window.pullFromCloudNow.__resumeWrapped) {
+    var origPull = window.pullFromCloudNow;
+    var wrappedPull = async function() {
+      manualPulling = true;
+      try {
+        return await origPull.apply(this, arguments);
+      } finally {
+        setTimeout(function() { manualPulling = false; }, 1000);
+      }
+    };
+    wrappedPull.__resumeWrapped = true;
+    window.pullFromCloudNow = wrappedPull;
+  }
+
+  var prevReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    if (typeof prevReady === 'function') prevReady.apply(this, arguments);
+    if (sw) {
+      sw.__resumeSessionAttached = false;
+      attachStudioSession(sw);
+    }
+  };
+
+  var initSw = getStudioWin();
+  if (initSw) attachStudioSession(initSw);
+})();
+</script>
+<!-- ===== [/앱 재실행 시 마지막 읽던·듣던 회차 및 문단 자동 복원 패치 끝] ===== -->
 
   </body>
 </html>
