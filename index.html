@@ -7441,6 +7441,610 @@
 </script>
 <!-- ===== [/앱 재실행 시 마지막 읽던·듣던 회차 및 문단 자동 복원 패치 끝] ===== -->
 
+<!-- ===== [속도 정상화(DOM 스래싱 완전 차단) + AI 패치센터 '유사 구간 일괄 강제 적용' 통합 패치] ===== -->
+<script id="studioTurboAndFuzzyBatchPatch">
+(function() {
+  if (window.__STUDIO_TURBO_FUZZY_BATCH_V1) return;
+  window.__STUDIO_TURBO_FUZZY_BATCH_V1 = true;
+
+  var origById = Document.prototype.getElementById;
+
+  function getStudioWin() {
+    var ifr = origById.call(document, 'studioFrame');
+    return (ifr && ifr.contentWindow) ? ifr.contentWindow : null;
+  }
+
+  // 1. 바깥 창에서 syncRadarCollapsible(window)가 0.6초마다 전체 div를 뒤지지 못하도록 더미 배지 생성
+  if (document.body && !origById.call(document, 'v92RadarBriefingBar')) {
+    var outerDummyRadar = document.createElement('div');
+    outerDummyRadar.id = 'v92RadarBriefingBar';
+    outerDummyRadar.style.display = 'none';
+    document.body.appendChild(outerDummyRadar);
+  }
+
+  // 바깥 창 document.body.querySelectorAll('button, div, span') 경량화
+  if (document.body && !document.body.__fastQsaPatched) {
+    document.body.__fastQsaPatched = true;
+    var origOuterQsa = document.body.querySelectorAll.bind(document.body);
+    document.body.querySelectorAll = function(sel) {
+      if (sel === 'button, div, span') {
+        return origOuterQsa(':scope > button, :scope > div, :scope > span');
+      }
+      return origOuterQsa(sel);
+    };
+  }
+
+  // 2. 모바일 V12 0.55초 타이머 과부하 차단 (O(log N) 이진 탐색 + 정적 레이아웃 1회 캐싱)
+  function optimizeMobV12Loops() {
+    var NS = window.__MOB_V12;
+    if (!NS || NS.__turboOptimized) return;
+    NS.__turboOptimized = true;
+
+    NS.updateLiveEpBadge = function(sw) {
+      if (!sw || !sw.document) return;
+      var doc = sw.document;
+      var hlTab = doc.getElementById('tabHighlight');
+      if (hlTab && !hlTab.classList.contains('active')) return; // 패치센터·카드 탭 열람 중엔 계산 즉시 생략
+
+      var txtEl = doc.querySelector('.mob-ep-live-txt');
+      if (!txtEl) return;
+
+      var tab = (typeof sw.getActiveTab === 'function') ? sw.getActiveTab() : null;
+      if (!tab || !String(tab.text || '').trim()) {
+        if (txtEl.textContent !== '없음') txtEl.textContent = '없음';
+        return;
+      }
+
+      var viewer = doc.getElementById('highlightViewer');
+      var hdr = doc.querySelector('[data-mob-main-hdr="1"]');
+      var probeY = (hdr ? hdr.getBoundingClientRect().bottom : 84) + 24;
+
+      if (viewer && Array.isArray(tab.episodes) && tab.episodes.length > 0) {
+        var rows = viewer.querySelectorAll('.p-row[data-line]');
+        if (rows.length > 0) {
+          // 3,500문단 선형 루프 대신 최대 12회 비교로 끝나는 이진 탐색(Binary Search)
+          var lo = 0, hi = rows.length - 1, ans = -1;
+          while (lo <= hi) {
+            var mid = (lo + hi) >> 1;
+            if (rows[mid].getBoundingClientRect().bottom >= probeY) {
+              ans = mid;
+              hi = mid - 1;
+            } else {
+              lo = mid + 1;
+            }
+          }
+          if (ans !== -1) {
+            var gl = parseInt(rows[ans].getAttribute('data-line'), 10);
+            if (!isNaN(gl)) {
+              for (var e = 0; e < tab.episodes.length; e++) {
+                var ep = tab.episodes[e];
+                if (gl >= ep.startLine && gl < ep.startLine + ep.lines.length) {
+                  var nextBadge = NS.toShortEpBadge(ep.title, ep.epNum, ep.hasExplicitHeader);
+                  if (txtEl.textContent !== nextBadge) txtEl.textContent = nextBadge;
+                  return;
+                }
+              }
+            }
+          }
+        }
+        var fallbackBadge = NS.toShortEpBadge(tab.episodes[0].title, tab.episodes[0].epNum, tab.episodes[0].hasExplicitHeader);
+        if (txtEl.textContent !== fallbackBadge) txtEl.textContent = fallbackBadge;
+        return;
+      }
+      if (txtEl.textContent !== '전체') txtEl.textContent = '전체';
+    };
+
+    var origSyncLayout = NS.syncLayoutPart1;
+    NS.syncLayoutPart1 = function(sw) {
+      if (!sw || !sw.document || !sw.document.body) return;
+      var now = Date.now();
+      // 최초 2회 이후에는 무거운 전체 DOM 재정렬 주기를 대폭 늦추고 가벼운 상태만 갱신
+      if (sw.__v12InitCount >= 2 && (now - (sw.__v12LastFullAt || 0) < 4000)) {
+        var doc = sw.document;
+        var vbar = doc.querySelector('[data-mob-fixed-vbar="1"]');
+        if (vbar) {
+          var hlTab = doc.getElementById('tabHighlight');
+          var shouldShow = !hlTab || hlTab.classList.contains('active');
+          if (vbar.classList.contains('is-hl-on') !== shouldShow) {
+            vbar.classList.toggle('is-hl-on', shouldShow);
+          }
+        }
+        if (typeof NS.syncPart2 === 'function') NS.syncPart2(sw);
+        return;
+      }
+      sw.__v12InitCount = (sw.__v12InitCount || 0) + 1;
+      sw.__v12LastFullAt = now;
+      return origSyncLayout.apply(this, arguments);
+    };
+  }
+  optimizeMobV12Loops();
+
+  // 3. 스튜디오 내부 프레임(#studioFrame)에 주입할 패치 (DOM 보호 + v9.7 캐시 전달 + 유사 구간 일괄 강제 적용)
+  function injectTurboAndFuzzyIntoStudio(sw) {
+    if (!sw || !sw.document || !sw.document.body) return;
+    var iDoc = sw.document;
+
+    // (A) dockFloatingPills의 0.8초마다 수만 개 태그 전수 스캔 차단
+    if (!iDoc.body.__fastInnerQsaPatched) {
+      iDoc.body.__fastInnerQsaPatched = true;
+      var origInnerQsa = iDoc.body.querySelectorAll.bind(iDoc.body);
+      iDoc.body.querySelectorAll = function(sel) {
+        if (sel === 'button, div, span') {
+          return origInnerQsa(':scope > button, :scope > div, :scope > span, header > button, header > div, header > span');
+        }
+        return origInnerQsa(sel);
+      };
+    }
+
+    // (B) 바깥 index.html에만 있던 v9.7 속도향상 캐시 엔진이 내부 스튜디오에 없다면 자동 전달
+    if (!sw._MAGYO_V97_ALLINONE_LOADED && typeof sw.inspectSingleLine === 'function') {
+      var v97Style = origById.call(document, 'magyoV97AllInOneStyles');
+      var v97Script = origById.call(document, 'magyoV97AllInOneScript');
+      if (v97Style && !iDoc.getElementById('magyoV97AllInOneStyles')) {
+        var stClone = iDoc.createElement('style');
+        stClone.id = 'magyoV97AllInOneStyles';
+        stClone.textContent = v97Style.textContent;
+        (iDoc.head || iDoc.documentElement).appendChild(stClone);
+      }
+      ['v95DriveModalBackdrop', 'v97TtsApiModalBackdrop', 'v97MasterBackupInput'].forEach(function(mid) {
+        var mEl = origById.call(document, mid);
+        if (mEl && !iDoc.getElementById(mid)) {
+          iDoc.body.insertAdjacentHTML('beforeend', mEl.outerHTML);
+        }
+      });
+      if (v97Script) {
+        try {
+          var scClone = iDoc.createElement('script');
+          scClone.id = 'magyoV97AllInOneScriptInjected';
+          scClone.textContent = v97Script.textContent;
+          iDoc.body.appendChild(scClone);
+        } catch (e) { console.warn('v9.7 forward error:', e); }
+      }
+    }
+
+    // (C) AI 패치센터 '유사 구간 원클릭 일괄 강제 적용' & rematchPatchQueue 지연 가속기 주입
+    if (sw.__FUZZY_BATCH_ENGINE_READY) return;
+
+    var innerCode = [
+      '(function(){',
+      '  if (window.__FUZZY_BATCH_ENGINE_READY) return;',
+      '  window.__FUZZY_BATCH_ENGINE_READY = true;',
+      '',
+      '  var st = document.createElement("style");',
+      '  st.id = "fuzzyBatchBarStyle";',
+      '  st.textContent =',
+      '    ".fuzzy-batch-bar {" +',
+      '    "  background: linear-gradient(135deg, rgba(30, 41, 59, 0.97), rgba(217, 119, 6, 0.18));" +',
+      '    "  border: 1px solid rgba(245, 158, 11, 0.6); border-left: 4px solid #f59e0b; border-radius: 10px;" +',
+      '    "  padding: 10px 14px; margin: 10px 0; display: none; flex-wrap: wrap; align-items: center;" +',
+      '    "  justify-content: space-between; gap: 8px; box-shadow: 0 6px 18px rgba(0,0,0,0.28);" +',
+      '    "}" +',
+      '    ".fuzzy-batch-bar.show { display: flex; }" +',
+      '    ".fuzzy-batch-info { font-size: 0.82rem; font-weight: 700; color: #fef3c7; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }" +',
+      '    ".fuzzy-batch-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }" +',
+      '    ".fuzzy-min-select {" +',
+      '    "  height: 33px; border-radius: 7px; background: #0f172a; color: #fde68a; border: 1px solid #f59e0b;" +',
+      '    "  padding: 0 8px; font-size: 0.78rem; font-weight: 800; outline: none; cursor: pointer;" +',
+      '    "}" +',
+      '    ".btn-fuzzy-apply-all {" +',
+      '    "  background: linear-gradient(135deg, #d97706, #ea580c) !important; color: #fff !important;" +',
+      '    "  border: 1px solid #fbbf24 !important; border-radius: 8px !important; padding: 7px 13px !important;" +',
+      '    "  font-size: 0.81rem !important; font-weight: 800 !important; cursor: pointer !important; white-space: nowrap !important;" +',
+      '    "}" +',
+      '    ".btn-fuzzy-apply-all:hover { filter: brightness(1.08); }" +',
+      '    ".btn-fuzzy-combo-all {" +',
+      '    "  background: linear-gradient(135deg, #0d9488, #0284c7) !important; color: #fff !important;" +',
+      '    "  border: 1px solid #5eead4 !important; border-radius: 8px !important; padding: 7px 12px !important;" +',
+      '    "  font-size: 0.79rem !important; font-weight: 800 !important; cursor: pointer !important; white-space: nowrap !important;" +',
+      '    "}" +',
+      '    "body.paper-theme .fuzzy-batch-bar { background: #fef3c7 !important; border-color: #d97706 !important; }" +',
+      '    "body.paper-theme .fuzzy-batch-info { color: #78350f !important; }";',
+      '  (document.head || document.documentElement).appendChild(st);',
+      '',
+      '  // 패치센터 탭이 닫혀 있을 때는 무거운 rematchPatchQueue()를 보류하여 본문/카드 편집 렉 원천 차단',
+      '  var patchDirtyWhileHidden = false;',
+      '  var inBatchMode = false;',
+      '  if (typeof window.rematchPatchQueue === "function" && !window.rematchPatchQueue.__deferredWrapped) {',
+      '    var origRematch = window.rematchPatchQueue;',
+      '    var wrappedRematch = function(forceNow) {',
+      '      if (inBatchMode) return;',
+      '      var pc = document.getElementById("tabPatchCenter");',
+      '      if (!forceNow && pc && !pc.classList.contains("active")) {',
+      '        patchDirtyWhileHidden = true;',
+      '        return;',
+      '      }',
+      '      patchDirtyWhileHidden = false;',
+      '      var r = origRematch.apply(this, arguments);',
+      '      scheduleFuzzyBarSync();',
+      '      return r;',
+      '    };',
+      '    wrappedRematch.__deferredWrapped = true;',
+      '    wrappedRematch.__orig = origRematch;',
+      '    rematchPatchQueue = window.rematchPatchQueue = wrappedRematch;',
+      '  }',
+      '',
+      '  // 패치센터 탭을 여는 순간 보류된 매칭이 있으면 1회만 갱신',
+      '  document.addEventListener("click", function(e) {',
+      '    var t = e.target && e.target.closest ? e.target.closest("[onclick], button, .tab-btn") : null;',
+      '    if (!t) return;',
+      '    setTimeout(function() {',
+      '      var pc = document.getElementById("tabPatchCenter");',
+      '      if (pc && pc.classList.contains("active")) {',
+      '        if (patchDirtyWhileHidden && typeof window.rematchPatchQueue === "function") {',
+      '          window.rematchPatchQueue(true);',
+      '        } else {',
+      '          scheduleFuzzyBarSync();',
+      '        }',
+      '      }',
+      '    }, 30);',
+      '  }, true);',
+      '',
+      '  var minSimThreshold = 0; // 0 = 화면에 표시된 모든 유사 구간 강제 적용 버튼',
+      '  var syncBarTimer = null;',
+      '',
+      '  function isFuzzyForceButton(btn) {',
+      '    if (!btn || btn.disabled || btn.hasAttribute("data-fuzzy-batch-ui")) return false;',
+      '    var txt = (btn.textContent || "").replace(/\\s+/g, " ").trim();',
+      '    return /유사\\s*구간/.test(txt) && /강제\\s*적용/.test(txt);',
+      '  }',
+      '',
+      '  function findExactBatchButton(pc) {',
+      '    if (!pc) return null;',
+      '    var btns = pc.querySelectorAll("button");',
+      '    for (var i = 0; i < btns.length; i++) {',
+      '      var b = btns[i];',
+      '      if (b.disabled || b.hasAttribute("data-fuzzy-batch-ui")) continue;',
+      '      var tx = (b.textContent || "").replace(/\\s+/g, " ").trim();',
+      '      if (/(?:정확\\s*일치|일치\\s*항목|일치\\s*패치|매칭\\s*항목|100%).*(?:일괄|전체|모두)\\s*(?:적용|치환)|일괄\\s*자동\\s*치환|일치분\\s*일괄\\s*적용/.test(tx)) {',
+      '        var numM = tx.match(/\\(\\s*(\\d+)\\s*건?\\s*\\)/);',
+      '        if (numM && parseInt(numM[1], 10) === 0) continue;',
+      '        return b;',
+      '      }',
+      '    }',
+      '    return null;',
+      '  }',
+      '',
+      '  function parsePatchLocation(btn, domIdx) {',
+      '    var txt = (btn.textContent || "").replace(/\\s+/g, " ").trim();',
+      '    var simM = txt.match(/(\\d+(?:\\.\\d+)?)\\s*%/);',
+      '    var sim = simM ? parseFloat(simM[1]) : 100;',
+      '    var onclickCode = btn.getAttribute("onclick") || "";',
+      '    var qIdx = -1;',
+      '    var patchObj = null;',
+      '    var argM = onclickCode.match(/\\(\\s*(\\d+)\\b/);',
+      '    if (argM && typeof patchQueue !== "undefined" && Array.isArray(patchQueue)) {',
+      '      qIdx = parseInt(argM[1], 10);',
+      '      if (qIdx >= 0 && qIdx < patchQueue.length) patchObj = patchQueue[qIdx];',
+      '    } else if (typeof patchQueue !== "undefined" && Array.isArray(patchQueue)) {',
+      '      var strM = onclickCode.match(/\\(\\s*[\'"]([^\'"]+)[\'"]/);',
+      '      if (strM) {',
+      '        for (var k = 0; k < patchQueue.length; k++) {',
+      '          if (patchQueue[k] && String(patchQueue[k].id) === strM[1]) { qIdx = k; patchObj = patchQueue[k]; break; }',
+      '        }',
+      '      }',
+      '    }',
+      '',
+      '    var tIdx = (typeof activeTabIdx === "number") ? activeTabIdx : 0;',
+      '    var charStart = -1, charEnd = -1;',
+      '',
+      '    if (patchObj && typeof fileTabs !== "undefined" && Array.isArray(fileTabs)) {',
+      '      var candTab = (typeof patchObj.tIdx === "number") ? patchObj.tIdx',
+      '        : (typeof patchObj.tabIdx === "number" ? patchObj.tabIdx',
+      '        : (typeof patchObj.matchedTabIdx === "number" ? patchObj.matchedTabIdx : tIdx));',
+      '      if (fileTabs[candTab]) tIdx = candTab;',
+      '      var tabText = fileTabs[tIdx] ? String(fileTabs[tIdx].text || "") : "";',
+      '      var newTxt = String(patchObj.replace || patchObj.newText || patchObj.replacement || "");',
+      '',
+      '      // 1순위: patchObj 내부에 저장된 실제 매칭 원문 문자열로 정확한 문자 위치 탐색',
+      '      var objs = [patchObj, patchObj.match, patchObj.fuzzy, patchObj.fuzzyMatch, patchObj.bestMatch].filter(Boolean);',
+      '      var strKeys = ["matchedText", "fuzzyText", "fuzzyMatchedText", "bestMatchText", "foundText", "actualOld", "targetSlice", "matchedOrig"];',
+      '      for (var oi = 0; oi < objs.length && charStart === -1; oi++) {',
+      '        var ob = objs[oi];',
+      '        for (var si = 0; si < strKeys.length; si++) {',
+      '          var sv = ob[strKeys[si]];',
+      '          if (typeof sv === "string" && sv.length >= 6 && sv !== newTxt) {',
+      '            var pos = tabText.indexOf(sv);',
+      '            if (pos !== -1) { charStart = pos; charEnd = pos + sv.length; break; }',
+      '          }',
+      '        }',
+      '      }',
+      '',
+      '      // 2순위: 숫자형 문자 오프셋 또는 줄 번호 쌍 확인',
+      '      if (charStart === -1 && tabText) {',
+      '        var charPairs = [["matchStart","matchEnd"],["fuzzyStart","fuzzyEnd"],["bestStart","bestEnd"],["charStart","charEnd"],["startOffset","endOffset"]];',
+      '        for (var ci = 0; ci < charPairs.length && charStart === -1; ci++) {',
+      '          var cs = patchObj[charPairs[ci][0]], ce = patchObj[charPairs[ci][1]];',
+      '          if (typeof cs === "number" && typeof ce === "number" && cs >= 0 && ce > cs && ce <= tabText.length) {',
+      '            charStart = cs; charEnd = ce;',
+      '          }',
+      '        }',
+      '      }',
+      '      if (charStart === -1 && tabText) {',
+      '        var lines = tabText.split("\\n");',
+      '        var linePairs = [["startLine","endLine"],["fuzzyStartLine","fuzzyEndLine"],["matchStartLine","matchEndLine"],["bestStartLine","bestEndLine"],["lineStart","lineEnd"]];',
+      '        for (var li = 0; li < linePairs.length && charStart === -1; li++) {',
+      '          var ls = patchObj[linePairs[li][0]], le = patchObj[linePairs[li][1]];',
+      '          if (typeof ls === "number" && ls >= 0 && ls < lines.length) {',
+      '            if (typeof le !== "number" || le < ls) le = ls;',
+      '            le = Math.min(le, lines.length - 1);',
+      '            var acc = 0;',
+      '            for (var r = 0; r < ls; r++) acc += lines[r].length + 1;',
+      '            var len = 0;',
+      '            for (var r2 = ls; r2 <= le; r2++) len += lines[r2].length + (r2 < le ? 1 : 0);',
+      '            charStart = acc; charEnd = acc + len;',
+      '          }',
+      '        }',
+      '      }',
+      '    }',
+      '    return { btn: btn, domIdx: domIdx, sim: sim, onclickCode: onclickCode, qIdx: qIdx, patchObj: patchObj, tIdx: tIdx, charStart: charStart, charEnd: charEnd };',
+      '  }',
+      '',
+      '  function collectFuzzyCandidates() {',
+      '    var pc = document.getElementById("tabPatchCenter");',
+      '    if (!pc) return [];',
+      '    var btns = pc.querySelectorAll("button");',
+      '    var list = [];',
+      '    for (var i = 0; i < btns.length; i++) {',
+      '      if (isFuzzyForceButton(btns[i])) {',
+      '        list.push(parsePatchLocation(btns[i], list.length));',
+      '      }',
+      '    }',
+      '    return list;',
+      '  }',
+      '',
+      '  function renderFuzzyBatchBar() {',
+      '    var pc = document.getElementById("tabPatchCenter");',
+      '    if (!pc) return;',
+      '    var allFuzzy = collectFuzzyCandidates();',
+      '    var bar = document.getElementById("fuzzyBatchMasterBar");',
+      '',
+      '    if (!allFuzzy.length) {',
+      '      if (bar) bar.classList.remove("show");',
+      '      return;',
+      '    }',
+      '',
+      '    if (!bar) {',
+      '      bar = document.createElement("div");',
+      '      bar.id = "fuzzyBatchMasterBar";',
+      '      bar.className = "fuzzy-batch-bar";',
+      '      bar.setAttribute("data-fuzzy-batch-ui", "1");',
+      '    }',
+      '',
+      '    // 첫 번째 유사 구간 카드가 들어 있는 패치 리스트 컨테이너 바로 위에 배치',
+      '    var firstBtn = allFuzzy[0].btn;',
+      '    var listAnchor = firstBtn;',
+      '    while (listAnchor && listAnchor.parentElement && listAnchor.parentElement !== pc) {',
+      '      if (listAnchor.parentElement.children.length >= Math.max(2, allFuzzy.length)) {',
+      '        listAnchor = listAnchor.parentElement;',
+      '        break;',
+      '      }',
+      '      listAnchor = listAnchor.parentElement;',
+      '    }',
+      '    if (listAnchor && listAnchor.parentNode && bar.nextSibling !== listAnchor) {',
+      '      listAnchor.parentNode.insertBefore(bar, listAnchor);',
+      '    } else if (!bar.parentNode) {',
+      '      pc.insertBefore(bar, pc.firstChild);',
+      '    }',
+      '',
+      '    var eligible = allFuzzy.filter(function(it) { return it.sim >= minSimThreshold; });',
+      '    var minSim = 100, maxSim = 0;',
+      '    allFuzzy.forEach(function(it) {',
+      '      if (it.sim < minSim) minSim = it.sim;',
+      '      if (it.sim > maxSim) maxSim = it.sim;',
+      '    });',
+      '    var exactBtn = findExactBatchButton(pc);',
+      '',
+      '    bar.innerHTML =',
+      '      "<div class=\\"fuzzy-batch-info\\">" +',
+      '        "<span>🎯 <b>유사 구간 대기 " + allFuzzy.length + "건</b> (" + Math.round(minSim) + "% ~ " + Math.round(maxSim) + "%)</span>" +',
+      '        "<span style=\\"font-size:0.75rem;opacity:0.85;\\">하단 문단부터 역순 일괄 치환 · [취소] 1회로 복구</span>" +',
+      '      "</div>" +',
+      '      "<div class=\\"fuzzy-batch-controls\\">" +',
+      '        "<select class=\\"fuzzy-min-select\\" id=\\"fuzzyMinSimSelect\\" data-fuzzy-batch-ui=\\"1\\">" +',
+      '          "<option value=\\"0\\"" + (minSimThreshold === 0 ? " selected" : "") + ">기준: 전체 (" + allFuzzy.length + "건)</option>" +',
+      '          "<option value=\\"95\\"" + (minSimThreshold === 95 ? " selected" : "") + ">95% 이상만</option>" +',
+      '          "<option value=\\"90\\"" + (minSimThreshold === 90 ? " selected" : "") + ">90% 이상만</option>" +',
+      '          "<option value=\\"85\\"" + (minSimThreshold === 85 ? " selected" : "") + ">85% 이상만</option>" +',
+      '          "<option value=\\"80\\"" + (minSimThreshold === 80 ? " selected" : "") + ">80% 이상만</option>" +',
+      '        "</select>" +',
+      '        "<button type=\\"button\\" class=\\"btn-fuzzy-apply-all\\" data-fuzzy-batch-ui=\\"1\\" id=\\"btnApplyAllFuzzyNow\\" " + (!eligible.length ? "disabled" : "") + ">" +',
+      '          "⚡ 유사 구간 원클릭 일괄 강제 적용 (" + eligible.length + "건)" +',
+      '        "</button>" +',
+      '        (exactBtn ? "<button type=\\"button\\" class=\\"btn-fuzzy-combo-all\\" data-fuzzy-batch-ui=\\"1\\" id=\\"btnApplyExactAndFuzzyNow\\">🚀 정확 일치 + 유사 구간 통합 적용</button>" : "") +',
+      '      "</div>";',
+      '',
+      '    bar.classList.add("show");',
+      '',
+      '    var selEl = document.getElementById("fuzzyMinSimSelect");',
+      '    if (selEl) {',
+      '      selEl.onchange = function() {',
+      '        minSimThreshold = Number(this.value) || 0;',
+      '        renderFuzzyBatchBar();',
+      '      };',
+      '    }',
+      '    var applyBtn = document.getElementById("btnApplyAllFuzzyNow");',
+      '    if (applyBtn) {',
+      '      applyBtn.onclick = function() { window.applyAllFuzzyPatchesAtOnce(false); };',
+      '    }',
+      '    var comboBtn = document.getElementById("btnApplyExactAndFuzzyNow");',
+      '    if (comboBtn) {',
+      '      comboBtn.onclick = function() { window.applyAllFuzzyPatchesAtOnce(true); };',
+      '    }',
+      '  }',
+      '',
+      '  function scheduleFuzzyBarSync() {',
+      '    clearTimeout(syncBarTimer);',
+      '    syncBarTimer = setTimeout(renderFuzzyBatchBar, 40);',
+      '  }',
+      '',
+      '  function invokeFuzzyItem(item) {',
+      '    if (item.patchObj && typeof patchQueue !== "undefined" && Array.isArray(patchQueue) && item.qIdx >= 0) {',
+      '      var liveIdx = patchQueue.indexOf(item.patchObj);',
+      '      if (liveIdx !== -1 && liveIdx !== item.qIdx && item.onclickCode) {',
+      '        var updatedCode = item.onclickCode.replace(/\\(\\s*\\d+\\b/, "(" + liveIdx);',
+      '        (new Function(updatedCode)).call(item.btn);',
+      '        return;',
+      '      }',
+      '    }',
+      '    if (typeof item.btn.onclick === "function") {',
+      '      item.btn.onclick.call(item.btn, new MouseEvent("click", { bubbles: true, cancelable: true }));',
+      '    } else if (item.onclickCode) {',
+      '      (new Function(item.onclickCode)).call(item.btn);',
+      '    } else {',
+      '      item.btn.click();',
+      '    }',
+      '  }',
+      '',
+      '  window.applyAllFuzzyPatchesAtOnce = function(includeExactFirst) {',
+      '    var pc = document.getElementById("tabPatchCenter");',
+      '    if (!pc) return;',
+      '',
+      '    if (includeExactFirst) {',
+      '      var exBtn = findExactBatchButton(pc);',
+      '      if (exBtn) {',
+      '        var origConf0 = window.confirm;',
+      '        try { window.confirm = function() { return true; }; exBtn.click(); } finally { window.confirm = origConf0; }',
+      '      }',
+      '    }',
+      '',
+      '    var targets = collectFuzzyCandidates().filter(function(it) { return it.sim >= minSimThreshold; });',
+      '    if (!targets.length) {',
+      '      if (typeof showToast === "function") showToast("적용할 유사 구간 항목이 없습니다.");',
+      '      renderFuzzyBatchBar();',
+      '      return;',
+      '    }',
+      '',
+      '    // 원고 하단 ➔ 상단(역순)으로 정렬하여 앞쪽 수정이 뒤쪽 줄 번호·글자 오프셋을 밀어내는 현상 원천 차단',
+      '    targets.sort(function(a, b) {',
+      '      if (a.tIdx !== b.tIdx) return a.tIdx - b.tIdx;',
+      '      if (a.charStart !== -1 && b.charStart !== -1 && a.charStart !== b.charStart) return b.charStart - a.charStart;',
+      '      return b.domIdx - a.domIdx;',
+      '    });',
+      '',
+      '    // 동일 문단 범위가 중복 걸린 패치는 1건만 안전 적용',
+      '    var filtered = [];',
+      '    var lastTab = -1, lowestStart = Infinity;',
+      '    for (var i = 0; i < targets.length; i++) {',
+      '      var cur = targets[i];',
+      '      if (cur.tIdx !== lastTab) { lastTab = cur.tIdx; lowestStart = Infinity; }',
+      '      if (cur.charStart !== -1 && cur.charEnd > lowestStart) continue;',
+      '      if (cur.charStart !== -1) lowestStart = cur.charStart;',
+      '      filtered.push(cur);',
+      '    }',
+      '',
+      '    // 탭별 단일 실행취소(Undo) 스냅샷 1회 저장',
+      '    var savedTabs = {};',
+      '    if (typeof pushUndo === "function" && typeof fileTabs !== "undefined") {',
+      '      filtered.forEach(function(it) {',
+      '        if (!savedTabs[it.tIdx] && fileTabs[it.tIdx]) {',
+      '          pushUndo(fileTabs[it.tIdx]);',
+      '          savedTabs[it.tIdx] = true;',
+      '        }',
+      '      });',
+      '    }',
+      '',
+      '    var noop = function() {};',
+      '    var savedFns = {};',
+      '    var heavyNames = ["analyzeAllTabs", "analyzeSingleTabOnly", "rematchPatchQueue", "renderHighlightViewer", "renderCards", "renderFileTabBar", "refreshActiveTabViews", "showToast"];',
+      '    Object.keys(window).forEach(function(k) {',
+      '      if (typeof window[k] === "function" && /^(?:render|update|refresh|rebuild).*(?:Patch|Queue)/i.test(k)) {',
+      '        if (heavyNames.indexOf(k) === -1) heavyNames.push(k);',
+      '      }',
+      '    });',
+      '',
+      '    var origPushUndo = window.pushUndo;',
+      '    var origConfirm = window.confirm;',
+      '    var appliedCount = 0;',
+      '',
+      '    try {',
+      '      window.confirm = function() { return true; };',
+      '      if (typeof origPushUndo === "function") pushUndo = window.pushUndo = noop;',
+      '',
+      '      if (filtered.length > 1) {',
+      '        inBatchMode = true;',
+      '        heavyNames.forEach(function(fn) {',
+      '          if (typeof window[fn] === "function") {',
+      '            savedFns[fn] = window[fn];',
+      '            try { window[fn] = noop; eval(fn + " = window[fn];"); } catch (e) { window[fn] = noop; }',
+      '          }',
+      '        });',
+      '',
+      '        for (var idx = 0; idx < filtered.length - 1; idx++) {',
+      '          try { invokeFuzzyItem(filtered[idx]); appliedCount++; } catch (err) { console.warn(err); }',
+      '        }',
+      '',
+      '        // 마지막 1건을 실행하기 직전에 원래 분석·렌더링 함수를 복구하여 단 1번만 정식 갱신 수행',
+      '        inBatchMode = false;',
+      '        Object.keys(savedFns).forEach(function(fn) {',
+      '          try { window[fn] = savedFns[fn]; eval(fn + " = savedFns[fn];"); } catch (e) { window[fn] = savedFns[fn]; }',
+      '        });',
+      '        savedFns = {};',
+      '      }',
+      '',
+      '      invokeFuzzyItem(filtered[filtered.length - 1]);',
+      '      appliedCount++;',
+      '    } finally {',
+      '      inBatchMode = false;',
+      '      Object.keys(savedFns).forEach(function(fn) {',
+      '        try { window[fn] = savedFns[fn]; eval(fn + " = savedFns[fn];"); } catch (e) { window[fn] = savedFns[fn]; }',
+      '      });',
+      '      if (origPushUndo) pushUndo = window.pushUndo = origPushUndo;',
+      '      window.confirm = origConfirm;',
+      '    }',
+      '',
+      '    var mTa = document.getElementById("masterText");',
+      '    if (mTa && typeof getActiveTab === "function" && getActiveTab()) {',
+      '      mTa.value = getActiveTab().text;',
+      '    }',
+      '    if (typeof showToast === "function") {',
+      '      showToast("⚡ 유사 구간 패치 " + appliedCount + "건 원클릭 일괄 적용 완료! ([취소] 시 한 번에 복구)");',
+      '    }',
+      '    scheduleFuzzyBarSync();',
+      '  };',
+      '',
+      '  var pcEl = document.getElementById("tabPatchCenter");',
+      '  if (pcEl && typeof MutationObserver === "function") {',
+      '    var mo = new MutationObserver(function(muts) {',
+      '      for (var i = 0; i < muts.length; i++) {',
+      '        var tg = muts[i].target;',
+      '        if (tg && tg.closest && tg.closest("#fuzzyBatchMasterBar")) continue;',
+      '        scheduleFuzzyBarSync();',
+      '        break;',
+      '      }',
+      '    });',
+      '    mo.observe(pcEl, { childList: true, subtree: true });',
+      '  }',
+      '  scheduleFuzzyBarSync();',
+      '})();'
+    ].join('\n');
+
+    var sc = iDoc.createElement('script');
+    sc.id = 'studioFuzzyBatchInnerScript';
+    sc.textContent = innerCode;
+    iDoc.body.appendChild(sc);
+  }
+
+  var prevReady = window.__onBridgeReady;
+  window.__onBridgeReady = function(sw) {
+    optimizeMobV12Loops();
+    if (typeof prevReady === 'function') prevReady.apply(this, arguments);
+    injectTurboAndFuzzyIntoStudio(sw);
+    setTimeout(function() { injectTurboAndFuzzyIntoStudio(sw); }, 300);
+  };
+
+  var curSw = getStudioWin();
+  if (curSw) injectTurboAndFuzzyIntoStudio(curSw);
+
+  setInterval(function() {
+    optimizeMobV12Loops();
+    var sw = getStudioWin();
+    if (sw && !sw.__FUZZY_BATCH_ENGINE_READY) injectTurboAndFuzzyIntoStudio(sw);
+  }, 1500);
+})();
+</script>
+<!-- ===== [/속도 정상화 + AI 패치센터 '유사 구간 일괄 강제 적용' 통합 패치 끝] ===== -->
+
+ 
   </body>
 </html>
  
